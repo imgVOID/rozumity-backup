@@ -17,11 +17,9 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 
-from accounts import urls as routes_accounts
-
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/auth/', include('rest_framework.urls')),
     path('api/location/', include('cities_light.contrib.restframework3')),
-#    path('accounts/', include(routes_accounts, 'routes_accounts'))
+    path('api/accounts/', include('accounts.urls'))
 ]

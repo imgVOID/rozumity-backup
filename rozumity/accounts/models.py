@@ -22,6 +22,9 @@ class User(AbstractBaseUser, PermissionsMixin):
     def __str__(self):
         return self.email
 
+    class Meta:
+        verbose_name = _('User')
+        verbose_name_plural = _('Users')
 
 # TODO: subscription plans
 class AbstractProfile(models.Model):
@@ -47,8 +50,48 @@ class AbstractProfile(models.Model):
 
 class ClientProfile(AbstractProfile):
     profile = models.ForeignKey(AbstractProfile, on_delete=models.CASCADE, related_name='client_profile_set')
+    
+    class Meta:
+        verbose_name = _("Client's Profile")
+        verbose_name_plural = _("Clients' Profiles")
+    
+    def __str__(self):
+        return self.user.email
+
+
+class University(models.Model):
+    title = models.CharField(max_length=128)
+    
+    class Meta:
+        verbose_name = _('University')
+        verbose_name_plural = _('Universities')
+    
+    def __str__(self):
+        return self.title
+
+
+class Education(models.Model):
+    university = models.ForeignKey(University, on_delete=models.PROTECT)
+    university_degree = models.SmallIntegerField(
+        choices=((0, _('bachelor')), (1, _('master')), (2, _('doctor'))), default=0
+    )
+    date_start = models.DateField()
+    date_end = models.DateField()
+    
+    @property
+    def education_duration(self):
+        delta = self.date_start - self.date_end
+        return delta.days
 
 
 class ExpertProfile(AbstractProfile):
     profile = models.ForeignKey(AbstractProfile, on_delete=models.CASCADE, related_name='expert_profile_set')
-
+    education = models.ManyToManyField(Education, blank=True)
+    education_extra = models.TextField(max_length=500, null=True, blank=True)
+    
+    class Meta:
+        verbose_name = _("Expert's Profile")
+        verbose_name_plural = _("Experts' Profiles")
+    
+    def __str__(self):
+        return self.user.email
