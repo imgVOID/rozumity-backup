@@ -3,8 +3,6 @@ from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
-
-
 from .managers import CustomUserManager
 
 
@@ -24,6 +22,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     def __str__(self):
         return self.email
 
+
 # TODO: subscription plans
 class AbstractProfile(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
@@ -40,7 +39,6 @@ class AbstractProfile(models.Model):
     @property
     def name_reversed(self):
         return f'{self.last_name} {self.first_name}'
-        
 
 
 class ClientProfile(AbstractProfile):
