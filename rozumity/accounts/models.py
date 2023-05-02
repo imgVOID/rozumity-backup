@@ -39,6 +39,10 @@ class AbstractProfile(models.Model):
     @property
     def name_reversed(self):
         return f'{self.last_name} {self.first_name}'
+    
+    @property
+    def address(self):
+        return f'{str(self.city)}, {str(self.region)}, {str(self.country)}'
 
 
 class ClientProfile(AbstractProfile):
