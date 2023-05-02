@@ -21,5 +21,6 @@ from accounts import urls as routes_accounts
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-#    include((routes_accounts, 'routes_accounts'))
+    path('api/auth/', include('rest_framework.urls')),
+#    path('accounts/', include(routes_accounts, 'routes_accounts'))
 ]
