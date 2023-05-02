@@ -22,5 +22,6 @@ from accounts import urls as routes_accounts
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/auth/', include('rest_framework.urls')),
+    path('api/location/', include('cities_light.contrib.restframework3')),
 #    path('accounts/', include(routes_accounts, 'routes_accounts'))
 ]

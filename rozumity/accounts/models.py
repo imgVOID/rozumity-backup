@@ -29,8 +29,9 @@ class AbstractProfile(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     first_name = models.CharField(max_length=32)
     last_name = models.CharField(max_length=32)
-#    country = models.ForeignKey('cities_light.Country', on_delete=models.SET_NULL, null=True, blank=True) 
-#    city = models.ForeignKey('cities_light.City', on_delete=models.SET_NULL, null=True, blank=True)
+    country = models.ForeignKey('cities_light.Country', on_delete=models.SET_NULL, null=True, blank=True)
+    region = models.ForeignKey('cities_light.Region', on_delete=models.SET_NULL, null=True, blank=True)
+    city = models.ForeignKey('cities_light.City', on_delete=models.SET_NULL, null=True, blank=True)
     
     @property
     def name(self):
