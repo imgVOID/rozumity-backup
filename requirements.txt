@@ -1,6 +1,7 @@
 django==4.2
-djangorestframeworkt==3.14.0
+djangorestframework==3.14.0
+adrf==0.1.1
 psycopg2==2.9.6
+aiofiles==23.1.0
 pyuca==1.2
 django-cities-light==3.9.2
-adrf==0.1.1
