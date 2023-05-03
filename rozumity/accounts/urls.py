@@ -1,7 +1,11 @@
-from django.urls import path
+from django.urls import path, include
+from rest_framework import routers
 
-from accounts.views import db_populate_universities
+from . import views
+
+router = routers.DefaultRouter()
+router.register(r"ukraine", views.DBUniversity, basename="universities_ukraine")
 
 urlpatterns = [
-    path('db/populate/universities', db_populate_universities)
+    path("universities/", include(router.urls))
 ]

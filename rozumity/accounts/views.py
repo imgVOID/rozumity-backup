@@ -1,25 +1,70 @@
 from django.shortcuts import render
-from django.http import JsonResponse
+from django.core.exceptions import ObjectDoesNotExist
+from rest_framework.response import Response
+from adrf.views import APIView
+from adrf.viewsets import ViewSet
+from adrf.decorators import api_view
+from aiofiles import open
+from asgiref.sync import sync_to_async
 
-from accounts.models import University
+from .models import University
+from .serializers import UniversityJSONAPI
 
 
-def db_populate_universities(request):
-    count = 0
-    with open('accounts/fixtures/universities_of_ukraine.txt') as data:
-        for line in data:
-            line = line.strip()
-            _, created = University.objects.get_or_create(title=line)
-            if created:
-                count += 1
-    if count:
-        response = JsonResponse(status=201, data={
-            "success":"true", 
-            "text": f'{count} universities have been successfully loaded to the database.'
-        })
-    else:
-        response = JsonResponse(status=409, data={
-            "success":"false", 
-            "text": f'The database already contains all the provided universities.'
-        })
-    return response
+class DBUniversity(ViewSet):
+    async def list(self, request):
+        objects = []
+        async for university in University.objects.all():
+            objects.append(university)
+        objects = UniversityJSONAPI(objects, many=True).data
+        if objects:
+            response = Response(status=200, data={'data': objects})
+        else:
+            response = Response(status=404, data={"errors": [{
+                "status": 404, "title": "Not Found",
+                "detail": f'There are no universities for this country.'
+            }]})
+        return response
+    
+    async def create(self, request):
+        objects = []
+        async with open('accounts/fixtures/universities_of_ukraine.txt', mode="r", encoding="utf-8") as data:
+            async for line in data:
+                line = line.strip()
+                obj, created = await University.objects.aget_or_create(title=line)
+                if created:
+                    objects.append(obj)
+        objects = UniversityJSONAPI(objects, many=True).data
+        if objects:
+            response = Response(status=201, data={'data': objects})
+        else:
+            response = Response(status=409, data={"errors": [{
+                "status": 409, "title": "Conflict", 
+                "detail": f'The database already contains the provided objects.'
+            }]})
+        return response
+    
+    async def delete(self, request, pk=None):
+        objects = []
+        async with open('accounts/fixtures/universities_of_ukraine.txt', mode="r", encoding="utf-8") as data:
+            async for line in data:
+                line = line.strip()
+                try:
+                    obj = await University.objects.aget(title=line)
+                except ObjectDoesNotExist:
+                    pass
+                else:
+                    university = UniversityJSONAPI(obj).data
+                    del university['attributes']
+                    await obj.adelete()
+                    objects.append(university)
+        if objects:
+            response = Response(status=204, data={'data': objects})
+        else:
+            response = Response(status=404, data={
+                "success":"false", "errors": [{
+                    "status": 404, "title": "Not Found", 
+                    "detail": f'There are no objects with the specified titles.'
+                }]
+            })
+        return response
