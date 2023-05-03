@@ -53,10 +53,16 @@ class Speciality(models.Model):
         return self.title
 
 
+# TODO: possibility to upload or share a diploma or a certificate
 class Education(models.Model):
+    DEGREE_CHOICES = (
+        (0, _('courses')), (1, _('undergraduate')), (2, _('specialist')), (3, _('master')), 
+        (4, _('postgraduate')), (5, _('doctor'))
+    )
+    
     university = models.ForeignKey(University, on_delete=models.PROTECT)
     university_degree = models.SmallIntegerField(
-        choices=((0, _('bachelor')), (1, _('master')), (2, _('doctor'))), default=0
+        choices=DEGREE_CHOICES, default=0
     )
     speciality = models.ForeignKey('Speciality', on_delete=models.PROTECT, null=True)
     date_start = models.DateField()
