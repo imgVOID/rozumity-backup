@@ -68,3 +68,5 @@ class DBUniversity(ViewSet):
                 }]
             })
         return response
+
+#TODO: API for apecialities

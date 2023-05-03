@@ -41,11 +41,24 @@ class University(models.Model):
         return self.title
 
 
+class Speciality(models.Model):
+    title = models.CharField(max_length=128)
+    code_ua = models.SmallIntegerField()
+    
+    class Meta:
+        verbose_name = _('Speciality')
+        verbose_name_plural = _('Specialities')
+    
+    def __str__(self):
+        return self.title
+
+
 class Education(models.Model):
     university = models.ForeignKey(University, on_delete=models.PROTECT)
     university_degree = models.SmallIntegerField(
         choices=((0, _('bachelor')), (1, _('master')), (2, _('doctor'))), default=0
     )
+    speciality = models.ForeignKey('Speciality', on_delete=models.PROTECT, null=True)
     date_start = models.DateField()
     date_end = models.DateField()
     
