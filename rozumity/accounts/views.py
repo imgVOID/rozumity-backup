@@ -11,6 +11,7 @@ from .models import University
 from .serializers import UniversityJSONAPI
 
 
+# TODO: add Celery or test permissions
 class DBUniversity(ViewSet):
     async def list(self, request):
         objects = []
