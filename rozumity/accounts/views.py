@@ -1,7 +1,8 @@
 from django.shortcuts import render
 from django.core.exceptions import ObjectDoesNotExist
 from rest_framework.response import Response
-from adrf.views import APIView
+from rest_framework import permissions
+from rest_framework.authentication import SessionAuthentication
 from adrf.viewsets import ViewSet
 from adrf.decorators import api_view
 from aiofiles import open
@@ -11,8 +12,21 @@ from .models import University
 from .serializers import UniversityJSONAPI
 
 
-# TODO: add Celery or test permissions
+class UniversityPermission(permissions.BasePermission):
+    def has_permission(self, request, view):
+        methods = {
+            'get': True,
+            'post': request.user.is_staff,
+            'patch': request.user.is_staff,
+            'options': request.user.is_staff,
+        }
+        return methods.get(request.method.lower(), False)
+
+
 class DBUniversity(ViewSet):
+    permission_classes=[UniversityPermission]
+    authentication_classes = [SessionAuthentication]
+    
     async def list(self, request):
         objects = []
         async for university in University.objects.all():
@@ -45,7 +59,7 @@ class DBUniversity(ViewSet):
             }]})
         return response
     
-    async def delete(self, request, pk=None):
+    async def patch(self, request):
         objects = []
         async with open('accounts/fixtures/universities_of_ukraine.txt', mode="r", encoding="utf-8") as data:
             async for line in data:
