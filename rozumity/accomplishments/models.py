@@ -4,6 +4,7 @@ from django.utils.translation import gettext_lazy as _
 
 class University(models.Model):
     title = models.CharField(max_length=128)
+    country = models.ForeignKey('cities_light.Country', on_delete=models.SET_NULL, null=True, blank=True)
     
     class Meta:
         verbose_name = _('University')

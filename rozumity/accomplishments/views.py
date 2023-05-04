@@ -5,8 +5,9 @@ from rest_framework.authentication import SessionAuthentication
 from adrf.viewsets import ViewSet
 from aiofiles import open
 
+from cities_light.models import Country
 from .models import University
-from .serializers import UniversityJSONAPI
+from .serializers import UniversityJSONAPI, CountryJSONAPI
 
 
 class UniversityPermission(permissions.BasePermission):
@@ -24,29 +25,34 @@ class DBUniversity(ViewSet):
     
     async def list(self, request):
         objects = []
-        async for university in University.objects.all():
+        country = await Country.objects.aget(code2='UA')
+        async for university in University.objects.filter(country=country):
             objects.append(university)
         objects = UniversityJSONAPI(objects, many=True).data
         if objects:
-            response = Response(status=200, data={'data': objects})
+            data = {'data': objects, 'included': [CountryJSONAPI(country).data]}
+            response = Response(status=200, data=data)
         else:
             response = Response(status=404, data={"errors": [{
                 "status": 404, "title": "Not Found",
-                "detail": f'There are no universities for this country.'
+                "detail": f'There are no universities for {country.name}'
             }]})
         return response
     
     async def create(self, request):
         objects = []
+        country = await Country.objects.aget(code2='UA')
         async with open('accomplishments/fixtures/universities_of_ukraine.txt', mode="r", encoding="utf-8") as data:
             async for line in data:
                 line = line.strip()
-                obj, created = await University.objects.aget_or_create(title=line)
+                title = line.split(';')[0]
+                obj, created = await University.objects.aget_or_create(title=title, country=country)
                 if created:
                     objects.append(obj)
         objects = UniversityJSONAPI(objects, many=True).data
         if objects:
-            response = Response(status=201, data={'data': objects})
+            data = {'data': objects, 'included': [CountryJSONAPI(country).data]}
+            response = Response(status=201, data=data)
         else:
             response = Response(status=409, data={"errors": [{
                 "status": 409, "title": "Conflict", 
@@ -59,8 +65,9 @@ class DBUniversity(ViewSet):
         async with open('accomplishments/fixtures/universities_of_ukraine.txt', mode="r", encoding="utf-8") as data:
             async for line in data:
                 line = line.strip()
+                title = line.split(';')[0]
                 try:
-                    obj = await University.objects.aget(title=line)
+                    obj = await University.objects.aget(title=title)
                 except ObjectDoesNotExist:
                     pass
                 else:
