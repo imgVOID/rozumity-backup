@@ -11,10 +11,10 @@ from .serializers import UniversityJSONAPI
 
 class UniversityPermission(permissions.BasePermission):
     def has_permission(self, request, view):
-        return True if all((
+        return all((
             request.user.is_authenticated,
             request.method == 'GET' or request.user.is_staff
-        )) else False
+        ))
 
 
 # TODO: retrieve
