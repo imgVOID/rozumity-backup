@@ -1,12 +1,9 @@
-from django.shortcuts import render
 from django.core.exceptions import ObjectDoesNotExist
 from rest_framework.response import Response
 from rest_framework import permissions
 from rest_framework.authentication import SessionAuthentication
 from adrf.viewsets import ViewSet
-from adrf.decorators import api_view
 from aiofiles import open
-from asgiref.sync import sync_to_async
 
 from .models import University
 from .serializers import UniversityJSONAPI
@@ -14,15 +11,13 @@ from .serializers import UniversityJSONAPI
 
 class UniversityPermission(permissions.BasePermission):
     def has_permission(self, request, view):
-        methods = {
-            'get': True,
-            'post': request.user.is_staff,
-            'patch': request.user.is_staff,
-            'options': request.user.is_staff,
-        }
-        return methods.get(request.method.lower(), False)
+        return True if any((
+            request.method == 'GET',
+            request.user.is_authenticated and request.user.is_staff
+        )) else False
 
 
+# TODO: retrieve
 class DBUniversity(ViewSet):
     permission_classes=[UniversityPermission]
     authentication_classes = [SessionAuthentication]
