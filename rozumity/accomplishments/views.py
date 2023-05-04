@@ -11,7 +11,7 @@ from .serializers import UniversityJSONAPI
 
 class UniversityPermission(permissions.BasePermission):
     def has_permission(self, request, view):
-        return True if any((
+        return True if all((
             request.user.is_authenticated,
             request.method == 'GET' or request.user.is_staff
         )) else False
