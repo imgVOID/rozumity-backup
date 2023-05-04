@@ -21,5 +21,5 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/auth/', include('rest_framework.urls')),
     path('api/locations/', include('cities_light.contrib.restframework3')),
-    path('api/', include('accounts.urls'))
+    path('api/accomplishments/', include('accomplishments.urls'))
 ]
