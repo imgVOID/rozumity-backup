@@ -7,7 +7,7 @@ from aiofiles import open
 
 from cities_light.models import Country
 from .models import University
-from .serializers import UniversityJSONAPI, CountryJSONAPI
+from .serializers import JSONAPIUniversityManager, UniversityJSONAPISerializer
 
 
 class UniversityPermission(permissions.BasePermission):
@@ -28,10 +28,11 @@ class DBUniversity(ViewSet):
         country = await Country.objects.aget(code2='UA')
         async for university in University.objects.filter(country=country):
             objects.append(university)
-        objects = UniversityJSONAPI(objects, many=True).data
         if objects:
-            data = {'data': objects, 'included': [CountryJSONAPI(country).data]}
-            response = Response(status=200, data=data)
+            data = await JSONAPIUniversityManager(
+                objects, related=country
+            ).data
+            response = Response(status=201, data=data)
         else:
             response = Response(status=404, data={"errors": [{
                 "status": 404, "title": "Not Found",
@@ -49,9 +50,10 @@ class DBUniversity(ViewSet):
                 obj, created = await University.objects.aget_or_create(title=title, country=country)
                 if created:
                     objects.append(obj)
-        objects = UniversityJSONAPI(objects, many=True).data
         if objects:
-            data = {'data': objects, 'included': [CountryJSONAPI(country).data]}
+            data = await JSONAPIUniversityManager(
+                objects, related=country
+            ).data
             response = Response(status=201, data=data)
         else:
             response = Response(status=409, data={"errors": [{
@@ -71,7 +73,7 @@ class DBUniversity(ViewSet):
                 except ObjectDoesNotExist:
                     pass
                 else:
-                    university = UniversityJSONAPI(obj).data
+                    university = UniversityJSONAPISerializer(obj).data
                     del university['attributes']
                     await obj.adelete()
                     objects.append(university)
@@ -86,4 +88,4 @@ class DBUniversity(ViewSet):
             })
         return response
 
-#TODO: API for apecialities
+#TODO: API for specialities
