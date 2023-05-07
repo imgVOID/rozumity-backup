@@ -4,8 +4,8 @@ from rest_framework import routers
 from . import views
 
 router = routers.DefaultRouter()
-router.register(r"ukraine", views.DBUniversity, basename="universities_ukraine")
+router.register(r"", views.UniversityViewSet, basename="universities")
 
 urlpatterns = [
-    path("universities/", include(router.urls))
+    path("universities/<slug:alpha2>/", include(router.urls))
 ]

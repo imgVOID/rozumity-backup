@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework', 'adrf',
     'cities_light',
+    'rozumity',
     'accounts',
     'accomplishments'
 ]
