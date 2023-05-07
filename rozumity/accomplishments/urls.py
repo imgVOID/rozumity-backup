@@ -7,5 +7,5 @@ router = routers.DefaultRouter()
 router.register(r"", views.UniversityViewSet, basename="universities")
 
 urlpatterns = [
-    path("universities/<slug:alpha2>/", include(router.urls))
+    path("universities/<slug:alpha2>/", include((router.urls, 'universities')), name='universities')
 ]

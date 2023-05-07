@@ -1,4 +1,6 @@
 from django.core.exceptions import ObjectDoesNotExist
+from django.core.paginator import Paginator
+from django.urls import reverse
 from rest_framework.response import Response
 from rest_framework.authentication import SessionAuthentication
 from adrf.viewsets import ViewSet
@@ -14,9 +16,9 @@ from .permissions import UniversityPermission
 class UniversityViewSet(ViewSet):
     permission_classes=[UniversityPermission]
     authentication_classes = [SessionAuthentication]
+    paginate_by = 100
     
     async def list(self, request, alpha2):
-        objects = []
         if len(alpha2) != 2:
             return Response(status=404, data={"errors": [{
                 "status": 400, "title": "Bad request",
@@ -29,11 +31,25 @@ class UniversityViewSet(ViewSet):
                 "status": 404, "title": "Not Found",
                 "detail": f'Sorry, but the country is not supported.'
             }]})
+        else:
+            objects = []
         async for university in University.objects.filter(country=country):
             objects.append(university)
         if objects:
-            data = await JSONAPIUniversityManager(
-                objects, related=country
+            page_number = request.query_params.get("page", 1)
+            paginator = Paginator(objects, self.paginate_by)
+            page_obj = paginator.get_page(page_number)
+            link = reverse('universities:universities-list', args=['ua'])[:-1]
+            data = {'links': {
+                "self": link + f'?page={page_obj.number}',
+            }}
+            if page_obj.has_next():
+                data['links']['next'] = link + f'?page={page_obj.next_page_number()}'
+            if page_obj.has_previous():
+                data['links']['prev'] = link + f'?page={page_obj.previous_page_number()}'
+            data['links']["last"] = link + f'?page={paginator.num_pages}'
+            data['data'] = await JSONAPIUniversityManager(
+                page_obj.object_list, related=country
             ).data
             response = Response(status=201, data=data)
         else:
@@ -44,7 +60,6 @@ class UniversityViewSet(ViewSet):
         return response
     
     async def create(self, request, alpha2):
-        objects = []
         alpha2 = alpha2.upper()
         if len(alpha2) != 2:
             return Response(status=404, data={"errors": [{
@@ -58,6 +73,7 @@ class UniversityViewSet(ViewSet):
             }]})
         else:
             country = await Country.objects.aget(code2=alpha2.upper())
+            objects = []
         async with open(
             f'accomplishments/fixtures/universities_{alpha2.lower()}.txt', 
             mode="r", encoding="utf-8"
@@ -81,7 +97,6 @@ class UniversityViewSet(ViewSet):
         return response
     
     async def patch(self, request, alpha2):
-        objects = []
         if len(alpha2) != 2:
             return Response(status=404, data={"errors": [{
                 "status": 400, "title": "Bad request",
@@ -92,6 +107,8 @@ class UniversityViewSet(ViewSet):
                 "status": 404, "title": "Not Found",
                 "detail": f'Sorry, but the country is not supported.'
             }]})
+        else:
+            objects = []
         async with open(
             f'accomplishments/fixtures/universities_{alpha2.lower()}.txt', 
             mode="r", encoding="utf-8"
