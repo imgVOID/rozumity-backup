@@ -20,11 +20,16 @@ class CountryJSONAPISerializer(JSONAPISerializer):
 
 
 class JSONAPIUniversityManager(JSONAPIManager):
-    def __init__(self, objects, related):
+    def __init__(self, objects, related=None, request=None):
         super().__init__(
             objects, UniversityRelJSONAPISerializer,
-            related, CountryJSONAPISerializer
+            related, CountryJSONAPISerializer, request
         )
+        self._related_url = 'locations/countries/'
+    
+    async def get_link_related(self):
+        url = await self.get_link()
+        return url.split('api/')[0] + 'api/' + self._related_url
 
 
 # TODO: to make a manager for the patch (bulk deletion), only ID and type

@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from asgiref.sync import sync_to_async
 
 
 class BaseJSONAPI(serializers.BaseSerializer):
@@ -78,8 +79,8 @@ class JSONAPIRelToManySerializer(BaseJSONAPI):
 
 
 class JSONAPIManager:
-    def __init__(self, objects, serializer, 
-                 related=None, related_serializer=None):
+    def __init__(self, objects, serializer, related=None, 
+                 related_serializer=None, request=None):
         try:
             iter(objects)
         except TypeError:
@@ -92,9 +93,20 @@ class JSONAPIManager:
             related = [related]
         finally:
             self._related = related
-
+        self._request = request
+        self._related_url = ''
         self.serializer = serializer
         self.related_serializer = related_serializer
+
+    async def _get_absolute_uri(self):
+        return await sync_to_async(self._request.build_absolute_uri)()
+    
+    async def get_link(self):
+        return await self._get_absolute_uri()
+    
+    async def get_link_related(self):
+        url = await self.get_link()
+        return url.split('api/')[0] + 'api/' + self._related_url
 
     @property
     async def data(self):
@@ -104,11 +116,22 @@ class JSONAPIManager:
                 self._objects, many=True
             )
             data['data'] = serialize.data
+            link = await self.get_link()
+            for obj_map in data['data']:
+                obj_map['links'] = {
+                    'self': f'{link}{obj_map["id"]}'
+                }
         if self._related and self.related_serializer:
             serialize = self.related_serializer(
                 self._related, many=True
             )
             data['included'] = serialize.data
+            link = await self.get_link_related()
+            for obj_map in data['included']:
+                obj_map['links'] = {
+                    'self': f'{link}{obj_map["id"]}'
+                }
+                print(await self.get_link_related())
         return data
 
     @property

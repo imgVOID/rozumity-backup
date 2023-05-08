@@ -7,16 +7,19 @@ from adrf.viewsets import ViewSet
 from aiofiles import open
 
 from cities_light.models import Country
+from rozumity.paginations import LimitOffsetAsyncPagination
+
 from .models import University
 from .serializers import JSONAPIUniversityManager, UniversityJSONAPISerializer
 from .permissions import UniversityPermission
 
 
 # TODO: retrieve
+# TODO: serialize when there are many foreign key fields
 class UniversityViewSet(ViewSet):
     permission_classes=[UniversityPermission]
     authentication_classes = [SessionAuthentication]
-    paginate_by = 100
+    pagination_class = LimitOffsetAsyncPagination
     
     async def list(self, request, alpha2):
         if len(alpha2) != 2:
@@ -36,22 +39,13 @@ class UniversityViewSet(ViewSet):
         async for university in University.objects.filter(country=country):
             objects.append(university)
         if objects:
-            page_number = request.query_params.get("page", 1)
-            paginator = Paginator(objects, self.paginate_by)
-            page_obj = paginator.get_page(page_number)
-            link = reverse('universities:universities-list', args=['ua'])[:-1]
-            data = {'links': {
-                "self": link + f'?page={page_obj.number}',
-            }}
-            if page_obj.has_next():
-                data['links']['next'] = link + f'?page={page_obj.next_page_number()}'
-            if page_obj.has_previous():
-                data['links']['prev'] = link + f'?page={page_obj.previous_page_number()}'
-            data['links']["last"] = link + f'?page={paginator.num_pages}'
-            data['data'] = await JSONAPIUniversityManager(
-                page_obj.object_list, related=country
-            ).data
-            response = Response(status=201, data=data)
+            response = await self.pagination_class.get_paginated_response(
+                await JSONAPIUniversityManager(
+                    await self.pagination_class.paginate_queryset(
+                        queryset=objects, request=request
+                    ), related=country, request=request
+                ).data
+            )
         else:
             response = Response(status=404, data={"errors": [{
                 "status": 404, "title": "Not Found",
@@ -96,7 +90,7 @@ class UniversityViewSet(ViewSet):
             }]})
         return response
     
-    async def patch(self, request, alpha2):
+    async def put(self, request, alpha2):
         if len(alpha2) != 2:
             return Response(status=404, data={"errors": [{
                 "status": 400, "title": "Bad request",
