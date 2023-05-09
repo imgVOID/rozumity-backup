@@ -1,6 +1,4 @@
 from django.core.exceptions import ObjectDoesNotExist
-from django.core.paginator import Paginator
-from django.urls import reverse
 from rest_framework.response import Response
 from rest_framework.authentication import SessionAuthentication
 from adrf.viewsets import ViewSet
@@ -8,9 +6,9 @@ from aiofiles import open
 
 from cities_light.models import Country
 from rozumity.paginations import LimitOffsetAsyncPagination
+from rozumity.serializers import JSONAPISerializer
 
 from .models import University
-from .serializers import JSONAPIUniversityManager, UniversityJSONAPISerializer
 from .permissions import UniversityPermission
 
 
@@ -27,29 +25,22 @@ class UniversityViewSet(ViewSet):
                 "status": 400, "title": "Bad request",
                 "detail": f'Please enter a valid alpha-2 country code.'
             }]})
-        try:
-            country = await Country.objects.aget(code2=alpha2.upper())
-        except ObjectDoesNotExist:
-            return Response(status=404, data={"errors": [{
-                "status": 404, "title": "Not Found",
-                "detail": f'Sorry, but the country is not supported.'
-            }]})
         else:
             objects = []
-        async for university in University.objects.filter(country=country):
+        async for university in University.objects.select_related('country').filter(country__code2=alpha2.upper()):
             objects.append(university)
         if objects:
-            response = await self.pagination_class.get_paginated_response(
-                await JSONAPIUniversityManager(
+            data = JSONAPISerializer(
                     await self.pagination_class.paginate_queryset(
                         queryset=objects, request=request
-                    ), related=country, request=request
+                    ), many=True
                 ).data
-            )
+            response = await self.pagination_class.get_paginated_response(data)
         else:
             response = Response(status=404, data={"errors": [{
                 "status": 404, "title": "Not Found",
-                "detail": f'There are no universities for {country.name}'
+                "detail": f'There are no universities for Sorry, '
+                'but the country with alpha2 code {alpha2.upper()} is not supported.'
             }]})
         return response
     

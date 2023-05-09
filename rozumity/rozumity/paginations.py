@@ -69,16 +69,11 @@ class LimitOffsetAsyncPagination:
         next = await self.get_next_link()
         prev = await self.get_previous_link()
         if next:
-            links['next'] = next.replace('%5B', '[').replace('%5D', ']')
+            links['next'] = next
         if prev:
-            links['prev'] = await self.get_previous_link()
+            links['prev'] = prev
         links['last'] = await self.get_last_link()
-        response = {
-            'links': links, **data
-        }
-        if data_included:
-            response['included'] = data_included
-        return Response(response, status=200)
+        return Response({'links': links, **data}, status=200)
 
     async def get_paginated_response_schema(self, schema=None):
         schema = schema if schema else {
