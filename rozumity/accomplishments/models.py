@@ -14,6 +14,19 @@ class University(models.Model):
         return self.title
 
 
+class Test(models.Model):
+    title = models.CharField(max_length=128)
+    country = models.ManyToManyField('cities_light.Country', null=True, blank=True)
+    city = models.ForeignKey('cities_light.City', on_delete=models.SET_NULL, null=True, blank=True)
+    
+    class Meta:
+        verbose_name = _('Test')
+        verbose_name_plural = _('Tests')
+    
+    def __str__(self):
+        return self.title
+
+
 class Speciality(models.Model):
     title = models.CharField(max_length=128)
     code_ua = models.SmallIntegerField()

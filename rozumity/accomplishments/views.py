@@ -1,4 +1,5 @@
 from django.core.exceptions import ObjectDoesNotExist
+from django.db.models import Prefetch
 from rest_framework.response import Response
 from rest_framework.authentication import SessionAuthentication
 from adrf.viewsets import ViewSet
@@ -8,9 +9,36 @@ from cities_light.models import Country
 from rozumity.paginations import LimitOffsetAsyncPagination
 from rozumity.serializers import JSONAPISerializer
 
-from .models import University
+from .models import University, Test
 from .permissions import UniversityPermission
 
+
+class TestViewSet(ViewSet):
+    permission_classes=[UniversityPermission]
+    authentication_classes = [SessionAuthentication]
+    pagination_class = LimitOffsetAsyncPagination
+    
+    async def list(self, request):
+        objects = []
+        async for university in Test.objects.prefetch_related(
+            Prefetch('country', to_attr='country_set'), 
+            'city__subregion', 'city__region', 'city__country'
+        ):
+            objects.append(university)
+        if objects:
+            data = JSONAPISerializer(
+                    await self.pagination_class.paginate_queryset(
+                        queryset=objects, request=request
+                    ), many=True
+                ).data
+            response = await self.pagination_class.get_paginated_response(data)
+        else:
+            response = Response(status=404, data={"errors": [{
+                "status": 404, "title": "Not Found",
+                "detail": f'There are no universities for Sorry, '
+                'but the country with alpha2 code {alpha2.upper()} is not supported.'
+            }]})
+        return response
 
 # TODO: retrieve
 # TODO: serialize when there are many foreign key fields
@@ -27,7 +55,7 @@ class UniversityViewSet(ViewSet):
             }]})
         else:
             objects = []
-        async for university in University.objects.select_related('country').filter(country__code2=alpha2.upper()):
+        async for university in University.objects.prefetch_related('country').filter(country__code2=alpha2.upper()):
             objects.append(university)
         if objects:
             data = JSONAPISerializer(
