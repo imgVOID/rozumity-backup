@@ -33,11 +33,7 @@ class TestViewSet(ViewSet):
                 ).data
             response = await self.pagination_class.get_paginated_response(data)
         else:
-            response = Response(status=404, data={"errors": [{
-                "status": 404, "title": "Not Found",
-                "detail": f'There are no universities for Sorry, '
-                'but the country with alpha2 code {alpha2.upper()} is not supported.'
-            }]})
+            response = Response(status=404)
         return response
 
 # TODO: retrieve
@@ -67,8 +63,8 @@ class UniversityViewSet(ViewSet):
         else:
             response = Response(status=404, data={"errors": [{
                 "status": 404, "title": "Not Found",
-                "detail": f'There are no universities for Sorry, '
-                'but the country with alpha2 code {alpha2.upper()} is not supported.'
+                "detail": 'There are no universities for Sorry, '
+                f'but the country with alpha2 code {alpha2.upper()} is not supported.'
             }]})
         return response
     
