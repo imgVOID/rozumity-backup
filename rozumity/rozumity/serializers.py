@@ -7,6 +7,24 @@ from rest_framework.utils.model_meta import get_field_info
 from asgiref.sync import sync_to_async
 
 
+class NotSelectedForeignKey(ImproperlyConfigured):
+    def __init__(self, message=None):
+        self.message = (
+            'Model.objects.select_related(<foreign_key_field_name>, ' 
+            '<foreign_key_field_name>__<inner_foreign_key_field_name>) '
+            'must be specified.'
+        )
+        super().__init__(self.message)
+
+
+class NotPrefetchedManyToMany(ImproperlyConfigured):
+    def __init__(self, message=None):
+        self.message = (
+            'Model.objects.prefetch_related(Prefetch("<many_to_many_field_name>", '
+            'to_attr="<many_to_many_field_name>_set")) must be specified.'
+        )
+        super().__init__(self.message)
+
 
 class JSONAPIDictSerializer(serializers.ListSerializer):
 
@@ -21,18 +39,11 @@ class JSONAPIDictSerializer(serializers.ListSerializer):
         mapped_instances_included = {}
         for obj in iterable:
             try:
-                attributes, relations, included = self.child._get_attrs_rels_incl(obj)
+                attributes, relations, included = self.child._split_attrs(obj)
             except AttributeError as e:
-                raise ImproperlyConfigured(
-                    'Model.objects.prefetch_related(Prefetch("<relation_field_name>", '
-                    'to_attr="<fied_name>_set")) '
-                    'must be specified'
-                ) from e
+                raise NotPrefetchedManyToMany from e
             except SynchronousOnlyOperation as e:
-                raise ImproperlyConfigured(
-                    'Model.objects.prefetch_related("<relation_field_name>__<inner_relation_field_name") '
-                    'must be specified'
-                ) from e
+                raise NotSelectedForeignKey from e
             mapped_instances.append(self.child._get_mapped_instance(
                 obj.__class__.__name__.lower(), 
                 obj.id, attributes, relations
@@ -48,95 +59,19 @@ class JSONAPIDictSerializer(serializers.ListSerializer):
         return ReturnDict({'data': data[0], 'included':data[1]}, serializer=self)
 
 
+# Create possibility to obtain a ManyToMany clild's relation objects
 class JSONAPISerializer(serializers.BaseSerializer):
     class Meta:
         list_serializer_class = JSONAPIDictSerializer
     
-    def _get_attrs_rels_incl(self, instance):
-        included = {}
-        attributes = {}
-        relations = {}
-        field_info = get_field_info(type(instance))
-        attributes = {
-            name: getattr(instance, name) for name, _ 
-            in field_info.fields.items()
-        }
-        relations = {}
-        for name, field in field_info.forward_relations.items():
-            relation_type = field.related_model.__name__.lower()
-            if field.to_many:
-                relation_objects = getattr(instance, name + '_set')
-                relation_field_info = get_field_info(type(relation_objects[0]))
-                try:
-                    relations[name]
-                except KeyError:
-                    relations[name] = {'data': [
-                        {'type': relation_type, 'id': obj.id}
-                        for obj in relation_objects
-                    ]}
-                relation_attributes = [{
-                    name: getattr(relation_obj, name) for name, _ 
-                    in relation_field_info.fields.items()
-                } for relation_obj in relation_objects]
-                relation_relations = []
-                for i in range(len(relation_objects)):
-                    # included
-                    relation_relations.append({})
-                    for name, field in relation_field_info.forward_relations.items():
-                        relation_relations[i].update({name:{
-                            'type': relation_type,
-                            'id': getattr(instance, name).id
-                        }})
-                    key = f'{relation_type}_{relation_objects[i].id}'
-                    try:
-                        included[key]
-                    except KeyError:
-                        relation_map = {
-                            'type': relation_type, 'id':relation_objects[i].id
-                        }
-                        if relation_attributes[i]:
-                            relation_map['attributes'] = relation_attributes[i]
-                        if relation_relations[i]:
-                            relation_map['relationships'] = relation_relations[i]
-                        included[key] = relation_map
-            else:
-                relation_objects = [getattr(instance, name)]
-                relation_field_info = get_field_info(type(relation_objects[0]))
-                try:
-                    relations[name]
-                except KeyError:
-                    relations[name] = {'data': {
-                        'type': relation_type,
-                        'id': getattr(instance, name).id
-                    }}
-            # included
-            relation_attributes = [{
-                name: getattr(relation_obj, name) for name, _ 
-                in relation_field_info.fields.items()
-            } for relation_obj in relation_objects]
-            relation_relations = []
-            for i in range(len(relation_objects)):
-                relation_relations.append({})
-                for name, field in relation_field_info.forward_relations.items():
-                    relation_type = field.related_model.__name__.lower()
-                    relation_object_relation_object = getattr(relation_objects[i], name)
-                    relation_relations[i].update({name:{
-                        'type': relation_type,
-                        'id': relation_object_relation_object.id
-                    }})
-                key = f'{relation_type}_{relation_objects[i].id}'
-                try:
-                    included[key]
-                except KeyError:
-                    relation_map = {
-                        'type': relation_type, 'id':relation_objects[i].id
-                    }
-                    if relation_attributes[i]:
-                        relation_map['attributes'] = relation_attributes[i]
-                    if relation_relations[i]:
-                        relation_map['relationships'] = relation_relations[i]
-                    included[key] = relation_map
-        return attributes, relations, included
+    @staticmethod
+    def _get_objects_attrs(objects_list, field_info):
+        objects_list = [{
+            name: getattr(relation_obj, name) for name, _ 
+            in field_info.items()
+        } for relation_obj in objects_list]
+        
+        return objects_list
     
     def _get_mapped_instance(self, instance_type, instance_id, 
                              attributes, relationships):
@@ -146,22 +81,65 @@ class JSONAPISerializer(serializers.BaseSerializer):
         if relationships:
             data['relationships'] = relationships
         return data
+    
+    # Create possibility to obtain a ManyToMany clild's relation objects
+    def _get_included(self, name, relation_type, relation_objects, relation_field_info):
+        included = {}
+        relation_attributes = self._get_objects_attrs(
+            relation_objects, relation_field_info.fields
+        )
+        relation_relations = []
+        for i in range(len(relation_objects)):
+            relation_relations.append({})
+            for name, field in relation_field_info.forward_relations.items():
+                relation_relations[i].update({name: self._get_mapped_instance(
+                    field.related_model.__name__.lower(), 
+                    getattr(relation_objects[i], name,).id, None, None
+                )})
+            key = f'{relation_type}_{relation_objects[i].id}'
+            try:
+                included[key]
+            except KeyError:
+                obj = relation_objects[i]
+                included[key] = self._get_mapped_instance(
+                    obj.__class__.__name__.lower(), obj.id, 
+                    relation_attributes[i], relation_relations[i]
+                )
+        return included
+    
+    def _split_attrs(self, instance):
+        field_info = get_field_info(type(instance))
+        attributes = self._get_objects_attrs([instance], field_info.fields).pop()
+        relations = {}
+        included = {}
+        for name, field in field_info.forward_relations.items():
+            relation_type = field.related_model.__name__.lower()
+            if field.to_many:
+                relation_objects = getattr(instance, f'{name}_set')
+            else:
+                relation_objects = [getattr(instance, name)]
+            relation_field_info = get_field_info(type(relation_objects[0]))
+            try:
+                relations[name]
+            except KeyError:
+                data = [{'type': relation_type, 'id': obj.id} 
+                        for obj in relation_objects]
+                relations[name] = {'data': data if len(data) > 1 else data[0]} 
+                included.update(self._get_included(
+                    name, relation_type, relation_objects, relation_field_info
+                ))
+        return attributes, relations, included
         
     def to_representation(self, instance):
         data = {'data': [], 'included': []}
         mapped_instances_included = {}
         try:
-            attributes, relations, included = self._get_attrs_rels_incl(instance)
+            attributes, relations, included = self._split_attrs(instance)
         except AttributeError as e:
-            raise ImproperlyConfigured(
-                'prefetch_related("<field_name>", to_attr="<fied_name>_set")'
-                'must be specified'
-            ) from e
+            raise NotPrefetchedManyToMany from e
+        except SynchronousOnlyOperation as e:
+            raise NotSelectedForeignKey from e
         data['data'] = [self._get_mapped_instance(
-            instance.__class__.__name__.lower(), 
-            instance.id, attributes, relations
-        )]
-        data['included'] = [self._get_mapped_instance(
             instance.__class__.__name__.lower(), 
             instance.id, attributes, relations
         )]

@@ -21,9 +21,8 @@ class TestViewSet(ViewSet):
     async def list(self, request):
         objects = []
         async for university in Test.objects.prefetch_related(
-            Prefetch('country', to_attr='country_set'), 
-            'city__subregion', 'city__region', 'city__country'
-        ):
+            Prefetch('country', to_attr='country_set')
+        ).select_related('city__subregion', 'city__region', 'city__country'):
             objects.append(university)
         if objects:
             data = JSONAPISerializer(
