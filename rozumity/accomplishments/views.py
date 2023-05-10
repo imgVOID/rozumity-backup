@@ -28,7 +28,7 @@ class TestViewSet(ViewSet):
             data = JSONAPISerializer(
                     await self.pagination_class.paginate_queryset(
                         queryset=objects, request=request
-                    ), many=True
+                    ), many=True, context={'request': request}
                 ).data
             response = await self.pagination_class.get_paginated_response(data)
         else:

@@ -1,9 +1,16 @@
 from django.db.models.manager import BaseManager
 from django.core.exceptions import ImproperlyConfigured, SynchronousOnlyOperation
-from rest_framework.utils.serializer_helpers import ReturnDict
+from rest_framework.utils.serializer_helpers import (
+    BindingDict, BoundField, JSONBoundField, NestedBoundField, ReturnDict,
+    ReturnList
+)
 from django.forms.models import model_to_dict
+from rest_framework.settings import api_settings
+from rest_framework.fields import MISSING_ERROR_MESSAGE, Field, SkipField
 from rest_framework import serializers
+from django.utils.functional import cached_property
 from rest_framework.utils.model_meta import get_field_info
+from rest_framework.relations import Hyperlink, PKOnlyObject
 from asgiref.sync import sync_to_async
 
 
@@ -27,28 +34,37 @@ class NotPrefetchedManyToMany(ImproperlyConfigured):
 
 
 class JSONAPIDictSerializer(serializers.ListSerializer):
-
+    def get_fields(self):
+        fields_list = []
+        for obj in self.iterable:
+            try:
+                attributes, relations, included = self.child.get_fields(obj)
+            except AttributeError as e:
+                raise NotPrefetchedManyToMany from e
+            except SynchronousOnlyOperation as e:
+                raise NotSelectedForeignKey from e
+            else:
+                fields_list.append({
+                    'instance_type': obj.__class__.__name__.lower(), 
+                    'instance_id': obj.id, 'attributes': attributes, 
+                    'relationships': relations, 'included': included}
+                )
+        return fields_list
+        
     def to_representation(self, data):
         """
         List of object instances -> List of dicts of primitive datatypes.
         """
         # Dealing with nested relationships, data can be a Manager,
         # so, first get a queryset from the Manager if needed
-        iterable = data.all() if isinstance(data, BaseManager) else data
+        # self.child._context contains request
+        self.iterable = data.all() if isinstance(data, BaseManager) else data
         mapped_instances = []
         mapped_instances_included = {}
-        for obj in iterable:
-            try:
-                attributes, relations, included = self.child._split_attrs(obj)
-            except AttributeError as e:
-                raise NotPrefetchedManyToMany from e
-            except SynchronousOnlyOperation as e:
-                raise NotSelectedForeignKey from e
-            mapped_instances.append(self.child._get_mapped_instance(
-                obj.__class__.__name__.lower(), 
-                obj.id, attributes, relations
-            ))
-            for name, relation in included.items():
+        for fields_list in self.get_fields():
+            # Create default serializer, not _get_mapped_instance
+            mapped_instances.append(self.child._get_mapped_instance(**fields_list))
+            for name, relation in fields_list['included'].items():
                 if not mapped_instances_included.get(name):
                     mapped_instances_included[name] = relation
         return mapped_instances, mapped_instances_included.values()
@@ -57,7 +73,6 @@ class JSONAPIDictSerializer(serializers.ListSerializer):
     def data(self):
         data = super().data
         return ReturnDict({'data': data[0], 'included':data[1]}, serializer=self)
-
 
 # Create possibility to obtain a ManyToMany clild's relation objects
 class JSONAPISerializer(serializers.BaseSerializer):
@@ -74,7 +89,7 @@ class JSONAPISerializer(serializers.BaseSerializer):
         return objects_list
     
     def _get_mapped_instance(self, instance_type, instance_id, 
-                             attributes, relationships):
+                             attributes, relationships, included=None):
         data = {'type': instance_type, 'id': instance_id}
         if attributes:
             data['attributes'] = attributes
@@ -107,7 +122,9 @@ class JSONAPISerializer(serializers.BaseSerializer):
                 )
         return included
     
-    def _split_attrs(self, instance):
+    def get_fields(self, instance=None):
+        if not instance:
+            instance = self.instance
         field_info = get_field_info(type(instance))
         attributes = self._get_objects_attrs([instance], field_info.fields).pop()
         relations = {}
@@ -131,10 +148,11 @@ class JSONAPISerializer(serializers.BaseSerializer):
         return attributes, relations, included
         
     def to_representation(self, instance):
+        self.instance = instance
         data = {'data': [], 'included': []}
         mapped_instances_included = {}
         try:
-            attributes, relations, included = self._split_attrs(instance)
+            attributes, relations, included = self.get_fields()
         except AttributeError as e:
             raise NotPrefetchedManyToMany from e
         except SynchronousOnlyOperation as e:
@@ -153,7 +171,7 @@ class JSONAPISerializer(serializers.BaseSerializer):
     def data(self):
         data = super().data
         return ReturnDict({'data': data[0], 'included':data[1]}, serializer=self)
-
+    
 
 class JSONAPIManager:
     def __init__(self, objects, serializer, related=None, 

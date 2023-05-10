@@ -60,7 +60,7 @@ class LimitOffsetAsyncPagination:
             return []
         return list(queryset[self.offset:self.offset + self.limit])
 
-    async def get_paginated_response(self, data, data_included=None):
+    async def get_paginated_response(self, data):
         links = {
             'self': await self._encode_url_parameters(
                 await self._get_absolute_uri()
