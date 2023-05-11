@@ -1,12 +1,5 @@
 from django.db.models.manager import BaseManager
 from django.core.exceptions import ImproperlyConfigured, SynchronousOnlyOperation
-from rest_framework.utils.serializer_helpers import (
-    BindingDict, BoundField, JSONBoundField, NestedBoundField, ReturnDict,
-    ReturnList
-)
-from django.forms.models import model_to_dict
-from rest_framework.settings import api_settings
-from rest_framework.fields import MISSING_ERROR_MESSAGE, Field, SkipField
 from rest_framework import serializers
 from django.utils.functional import cached_property
 from rest_framework.utils.model_meta import get_field_info
@@ -33,213 +26,193 @@ class NotPrefetchedManyToMany(ImproperlyConfigured):
         super().__init__(self.message)
 
 
-class JSONAPIDictSerializer(serializers.ListSerializer):
+class JSONAPIInitialSerializer(serializers.BaseSerializer):
+    def to_representation(self, instance):
+        return {
+            'type': instance.__class__.__name__.lower(), 
+            'id': instance.id
+        }
+
+
+class JSONAPIAttributesSerializer(serializers.BaseSerializer):
+    @cached_property
+    def fields(self):
+        fields = {}
+        for name, field in self.get_fields().items():
+            setattr(field, 'value', getattr(self.instance, name))
+            fields[name] = field
+        return fields
+    
     def get_fields(self):
-        fields_list = []
-        for obj in self.iterable:
-            try:
-                attributes, relations, included = self.child.get_fields(obj)
-            except AttributeError as e:
-                raise NotPrefetchedManyToMany from e
-            except SynchronousOnlyOperation as e:
-                raise NotSelectedForeignKey from e
-            else:
-                fields_list.append({
-                    'instance_type': obj.__class__.__name__.lower(), 
-                    'instance_id': obj.id, 'attributes': attributes, 
-                    'relationships': relations, 'included': included}
-                )
-        return fields_list
-        
-    def to_representation(self, data):
-        """
-        List of object instances -> List of dicts of primitive datatypes.
-        """
-        # Dealing with nested relationships, data can be a Manager,
-        # so, first get a queryset from the Manager if needed
-        # self.child._context contains request
-        self.iterable = data.all() if isinstance(data, BaseManager) else data
-        mapped_instances = []
-        mapped_instances_included = {}
-        for fields_list in self.get_fields():
-            # Create default serializer, not _get_mapped_instance
-            mapped_instances.append(self.child._get_mapped_instance(**fields_list))
-            for name, relation in fields_list['included'].items():
-                if not mapped_instances_included.get(name):
-                    mapped_instances_included[name] = relation
-        return mapped_instances, mapped_instances_included.values()
+        return dict(self._context.get('field_info', 
+                                      get_field_info(self.instance).fields))
+    
+    def to_representation(self, instance):
+        self.instance = instance
+        return {name: field.value for name, field in self.fields.items()}
 
-    @property
-    def data(self):
-        data = super().data
-        return ReturnDict({'data': data[0], 'included':data[1]}, serializer=self)
 
-# Create possibility to obtain a ManyToMany clild's relation objects
-class JSONAPISerializer(serializers.BaseSerializer):
-    class Meta:
-        list_serializer_class = JSONAPIDictSerializer
-    
-    @staticmethod
-    def _get_objects_attrs(objects_list, field_info):
-        objects_list = [{
-            name: getattr(relation_obj, name) for name, _ 
-            in field_info.items()
-        } for relation_obj in objects_list]
-        
-        return objects_list
-    
-    def _get_mapped_instance(self, instance_type, instance_id, 
-                             attributes, relationships, included=None):
-        data = {'type': instance_type, 'id': instance_id}
-        if attributes:
-            data['attributes'] = attributes
-        if relationships:
-            data['relationships'] = relationships
-        return data
-    
-    # Create possibility to obtain a ManyToMany clild's relation objects
-    def _get_included(self, name, relation_type, relation_objects, relation_field_info):
-        included = {}
-        relation_attributes = self._get_objects_attrs(
-            relation_objects, relation_field_info.fields
-        )
-        relation_relations = []
-        for i in range(len(relation_objects)):
-            relation_relations.append({})
-            for name, field in relation_field_info.forward_relations.items():
-                relation_relations[i].update({name: self._get_mapped_instance(
-                    field.related_model.__name__.lower(), 
-                    getattr(relation_objects[i], name,).id, None, None
-                )})
-            key = f'{relation_type}_{relation_objects[i].id}'
-            try:
-                included[key]
-            except KeyError:
-                obj = relation_objects[i]
-                included[key] = self._get_mapped_instance(
-                    obj.__class__.__name__.lower(), obj.id, 
-                    relation_attributes[i], relation_relations[i]
-                )
-        return included
-    
-    def get_fields(self, instance=None):
-        if not instance:
-            instance = self.instance
-        field_info = get_field_info(type(instance))
-        attributes = self._get_objects_attrs([instance], field_info.fields).pop()
-        relations = {}
-        included = {}
-        for name, field in field_info.forward_relations.items():
-            relation_type = field.related_model.__name__.lower()
-            if field.to_many:
-                relation_objects = getattr(instance, f'{name}_set')
+class JSONAPIRelationsSerializer(serializers.BaseSerializer):
+    @cached_property
+    def fields(self):
+        if not self._context.get('included_data'):
+            self._context['included_data'] = []
+        fields = {}
+        for name, field in self.get_fields().items():
+            value = []
+            to_many = field.to_many
+            field = field.model_field
+            if to_many:
+                objects_list = getattr(self.instance, f'{name}_set')
             else:
-                relation_objects = [getattr(instance, name)]
-            relation_field_info = get_field_info(type(relation_objects[0]))
-            try:
-                relations[name]
-            except KeyError:
-                data = [{'type': relation_type, 'id': obj.id} 
-                        for obj in relation_objects]
-                relations[name] = {'data': data if len(data) > 1 else data[0]} 
-                included.update(self._get_included(
-                    name, relation_type, relation_objects, relation_field_info
-                ))
-        return attributes, relations, included
+                objects_list = [getattr(self.instance, name)]
+            for object in objects_list:
+                data_initial = JSONAPIInitialSerializer(object).data
+                value.append(data_initial)
+                if self._context.get('is_included_needed'):
+                    data_included = {**data_initial}
+                    data_included['attributes'] = JSONAPIAttributesSerializer(object).data
+                    relatons = self.__class__(object).data
+                    if relatons:
+                        data_included['relations'] = relatons
+                    self._context['included_data'].append(data_included)
+            setattr(field, 'value', {
+                'data': value.pop() if len(value) == 1 else value
+            })
+            fields[name] = field
+        return fields
+    
+    def get_fields(self):
+        return dict(self._context.get('field_info', 
+                                      get_field_info(self.instance).forward_relations))
         
     def to_representation(self, instance):
         self.instance = instance
-        data = {'data': [], 'included': []}
-        mapped_instances_included = {}
         try:
-            attributes, relations, included = self.get_fields()
+            data = {
+                name:field.value for name, field 
+                in self.fields.items()
+            }
         except AttributeError as e:
             raise NotPrefetchedManyToMany from e
         except SynchronousOnlyOperation as e:
             raise NotSelectedForeignKey from e
-        data['data'] = [self._get_mapped_instance(
-            instance.__class__.__name__.lower(), 
-            instance.id, attributes, relations
-        )]
-        for name, relation in included.items():
-            if not mapped_instances_included.get(name):
-                mapped_instances_included[name] = relation
-        data['included'].extend(mapped_instances_included.values())
-        return data
+        else:
+            return data
 
+
+class JSONAPIManySerializer(serializers.ListSerializer):
+    def get_fields(self):
+        return self._context.get('field_info', get_field_info(self.iterable[0]))
+        
+    def to_representation(self, data):
+        self.iterable = data.all() if isinstance(data, BaseManager) else data
+        field_info = self.get_fields()
+        data = {'data': []}
+        for object in self.iterable:
+            object_data = {
+                **JSONAPIInitialSerializer(object).data,
+                'attributes': JSONAPIAttributesSerializer(
+                    object, context={'field_info': field_info.fields}
+                ).data
+            }
+            relationships_serializer = JSONAPIRelationsSerializer(
+                object, context={
+                    'field_info': field_info.forward_relations, 
+                    'is_included_needed': True
+                }
+            )
+            relationships = relationships_serializer.data
+            if relationships:
+                object_data['relationships'] = relationships
+                if not data.get('included'):
+                    data['included'] = {}
+                for obj in relationships_serializer._context['included_data']:
+                    data['included'][f'{obj["type"]}_{obj["id"]}'] = obj
+            data['data'].append(object_data)
+        if data.get('included'):
+            data['included'] = sorted(
+                list(data['included'].values()), 
+                key=lambda x: (x['type'], x['id'])
+            )
+        return data
+    
     @property
     def data(self):
-        data = super().data
-        return ReturnDict({'data': data[0], 'included':data[1]}, serializer=self)
-    
-
-class JSONAPIManager:
-    def __init__(self, objects, serializer, related=None, 
-                 related_serializer=None, request=None):
-        try:
-            iter(objects)
-        except TypeError:
-            objects = [objects]
-        finally:
-            self._objects = objects
-        try:
-            iter(related)
-        except TypeError:
-            related = [related]
-        finally:
-            self._related = related
-        self._request = request
-        self._related_url = ''
-        self.serializer = serializer
-        self.related_serializer = related_serializer
-
-    async def _get_absolute_uri(self):
-        return await sync_to_async(self._request.build_absolute_uri)()
-    
-    async def get_link(self):
-        return await self._get_absolute_uri()
-    
-    async def get_link_related(self):
-        url = await self.get_link()
-        return url.split('api/')[0] + 'api/' + self._related_url
-
-    @property
-    async def data(self):
-        data = {}
-        if self._objects and self.serializer:
-            serialize = self.serializer(
-                self._objects, many=True
+        if hasattr(self, 'initial_data') and not hasattr(self, '_validated_data'):
+            msg = (
+                'When a serializer is passed a `data` keyword argument you '
+                'must call `.is_valid()` before attempting to access the '
+                'serialized `.data` representation.\n'
+                'You should either call `.is_valid()` first, '
+                'or access `.initial_data` instead.'
             )
-            data['data'] = serialize.data
-            link = await self.get_link()
-            for obj_map in data['data']:
-                obj_map['links'] = {
-                    'self': f'{link}{obj_map["id"]}'
-                }
-        if self._related and self.related_serializer:
-            serialize = self.related_serializer(
-                self._related, many=True
+            raise AssertionError(msg)
+
+        if not hasattr(self, '_data'):
+            if self.instance is not None and not getattr(self, '_errors', None):
+                self._data = self.to_representation(self.instance)
+            elif hasattr(self, '_validated_data') and not getattr(self, '_errors', None):
+                self._data = self.to_representation(self.validated_data)
+            else:
+                self._data = self.get_initial()
+        return self._data
+
+
+class JSONAPISerializer(serializers.BaseSerializer):
+    class Meta:
+        list_serializer_class = JSONAPIManySerializer
+    
+    def get_fields(self):
+        return self._context.get('field_info', get_field_info(self.instance))
+
+    def to_representation(self, instance):
+        field_info = self.get_fields()
+        data = {'data': []}
+        object_data = {
+            **JSONAPIInitialSerializer(instance).data,
+            'attributes': JSONAPIAttributesSerializer(
+                instance, context={'field_info': field_info.fields}
+            ).data
+        }
+        relationships_serializer = JSONAPIRelationsSerializer(
+            instance, context={
+                'field_info': field_info.forward_relations, 
+                'is_included_needed': True
+            }
+        )
+        relationships = relationships_serializer.data
+        if relationships:
+            object_data['relationships'] = relationships
+            if not data.get('included'):
+                data['included'] = {}
+            for obj in relationships_serializer._context['included_data']:
+                data['included'][f'{obj["type"]}_{obj["id"]}'] = obj
+        data['data'].append(object_data)
+        if data.get('included'):
+            data['included'] = sorted(
+                list(data['included'].values()), 
+                key=lambda x: (x['type'], x['id'])
             )
-            data['included'] = serialize.data
-            link = await self.get_link_related()
-            for obj_map in data['included']:
-                obj_map['links'] = {
-                    'self': f'{link}{obj_map["id"]}'
-                }
-                print(await self.get_link_related())
         return data
-
+    
     @property
-    def data_sync(self):
-        data = {}
-        if self._objects and self.serializer:
-            serialize = self.serializer(
-                self._objects, many=True
+    def data(self):
+        if hasattr(self, 'initial_data') and not hasattr(self, '_validated_data'):
+            msg = (
+                'When a serializer is passed a `data` keyword argument you '
+                'must call `.is_valid()` before attempting to access the '
+                'serialized `.data` representation.\n'
+                'You should either call `.is_valid()` first, '
+                'or access `.initial_data` instead.'
             )
-            data['data'] = serialize.data
-        if self._related and self.related_serializer:
-            serialize = self.related_serializer(
-                self._related, many=True
-            )
-            data['included'] = serialize.data
-        return data
+            raise AssertionError(msg)
+
+        if not hasattr(self, '_data'):
+            if self.instance is not None and not getattr(self, '_errors', None):
+                self._data = self.to_representation(self.instance)
+            elif hasattr(self, '_validated_data') and not getattr(self, '_errors', None):
+                self._data = self.to_representation(self.validated_data)
+            else:
+                self._data = self.get_initial()
+        return self._data

@@ -50,13 +50,13 @@ class UniversityViewSet(ViewSet):
             }]})
         else:
             objects = []
-        async for university in University.objects.prefetch_related('country').filter(country__code2=alpha2.upper()):
+        async for university in University.objects.select_related('country').filter(country__code2=alpha2.upper()):
             objects.append(university)
         if objects:
             data = JSONAPISerializer(
                     await self.pagination_class.paginate_queryset(
                         queryset=objects, request=request
-                    ), many=True
+                    ), many=True, context={'request': request}
                 ).data
             response = await self.pagination_class.get_paginated_response(data)
         else:
