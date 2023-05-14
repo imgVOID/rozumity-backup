@@ -25,11 +25,12 @@ class TestViewSet(ViewSet):
         ).select_related('city__subregion', 'city__region', 'city__country'):
             objects.append(university)
         if objects:
+            objects = await self.pagination_class.paginate_queryset(
+                queryset=objects, request=request
+            )
             data = JSONAPISerializer(
-                    await self.pagination_class.paginate_queryset(
-                        queryset=objects, request=request
-                    ), many=True, context={'request': request}
-                ).data
+                objects, many=True, context={'request': request}
+            ).data
             response = await self.pagination_class.get_paginated_response(data)
         else:
             response = Response(status=404)

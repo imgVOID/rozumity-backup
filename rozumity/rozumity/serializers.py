@@ -4,6 +4,10 @@ from rest_framework import serializers
 from django.utils.functional import cached_property
 from rest_framework.utils.model_meta import get_field_info
 from rest_framework.relations import Hyperlink, PKOnlyObject
+from rest_framework.utils.serializer_helpers import (
+    BindingDict, BoundField, JSONBoundField, NestedBoundField, ReturnDict
+)
+from rest_framework.fields import JSONField, CharField, IntegerField
 from asgiref.sync import sync_to_async
 
 
@@ -102,37 +106,21 @@ class JSONAPIRelationsSerializer(serializers.BaseSerializer):
 
 
 class JSONAPIManySerializer(serializers.ListSerializer):
-    def get_fields(self):
-        return self._context.get('field_info', get_field_info(self.iterable[0]))
-        
     def to_representation(self, data):
         self.iterable = data.all() if isinstance(data, BaseManager) else data
-        field_info = self.get_fields()
+        field_info = get_field_info(self.iterable[0])
         data = {'data': []}
-        for object in self.iterable:
-            object_data = {
-                **JSONAPIInitialSerializer(object).data,
-                'attributes': JSONAPIAttributesSerializer(
-                    object, context={'field_info': field_info.fields}
-                ).data
-            }
-            relationships_serializer = JSONAPIRelationsSerializer(
-                object, context={
-                    'field_info': field_info.forward_relations, 
-                    'is_included_needed': True
-                }
-            )
-            relationships = relationships_serializer.data
-            if relationships:
-                object_data['relationships'] = relationships
-                if not data.get('included'):
-                    data['included'] = {}
-                for obj in relationships_serializer._context['included_data']:
-                    data['included'][f'{obj["type"]}_{obj["id"]}'] = obj
-            data['data'].append(object_data)
-        if data.get('included'):
+        included = {}
+        for obj in self.iterable:
+            obj_data = self.child.__class__(
+                obj, context={**self._context, 'field_info': field_info}
+            ).data
+            included.update({f'{obj["type"]}_{obj["id"]}': dict(obj) for obj 
+                             in obj_data.pop('included')})
+            data['data'].append(*obj_data.pop('data'))
+        if included:
             data['included'] = sorted(
-                list(data['included'].values()), 
+                list(included.values()), 
                 key=lambda x: (x['type'], x['id'])
             )
         return data
@@ -140,15 +128,8 @@ class JSONAPIManySerializer(serializers.ListSerializer):
     @property
     def data(self):
         if hasattr(self, 'initial_data') and not hasattr(self, '_validated_data'):
-            msg = (
-                'When a serializer is passed a `data` keyword argument you '
-                'must call `.is_valid()` before attempting to access the '
-                'serialized `.data` representation.\n'
-                'You should either call `.is_valid()` first, '
-                'or access `.initial_data` instead.'
-            )
-            raise AssertionError(msg)
-
+            raise AssertionError('you must call `.is_valid()` before attempting '
+                                 'to access the serialized `.data` representation.\n')
         if not hasattr(self, '_data'):
             if self.instance is not None and not getattr(self, '_errors', None):
                 self._data = self.to_representation(self.instance)
@@ -156,63 +137,64 @@ class JSONAPIManySerializer(serializers.ListSerializer):
                 self._data = self.to_representation(self.validated_data)
             else:
                 self._data = self.get_initial()
-        return self._data
+        return ReturnDict(self._data, serializer=self)
 
 
 class JSONAPISerializer(serializers.BaseSerializer):
+    type = CharField()
+    id = IntegerField()
+    attributes = JSONAPIAttributesSerializer()
+    relationships = JSONAPIRelationsSerializer()
+    included = JSONField()
+    
     class Meta:
         list_serializer_class = JSONAPIManySerializer
     
-    def get_fields(self):
-        return self._context.get('field_info', get_field_info(self.instance))
-
-    def to_representation(self, instance):
-        field_info = self.get_fields()
-        data = {'data': []}
-        object_data = {
-            **JSONAPIInitialSerializer(instance).data,
-            'attributes': JSONAPIAttributesSerializer(
-                instance, context={'field_info': field_info.fields}
-            ).data
-        }
-        relationships_serializer = JSONAPIRelationsSerializer(
-            instance, context={
+    @cached_property
+    def fields(self):
+        fields = self.get_fields()
+        field_info = self._context.get('field_info', get_field_info(self.instance))
+        BoundField.field_name = ''
+        initial_data = JSONAPIInitialSerializer(self.instance).data
+        for title in ['type', 'id']:
+            BoundField.field_name = title
+            fields[title] = BoundField(fields[title], initial_data[title], [], title)
+        fields['attributes'] = JSONBoundField(
+            fields['attributes'], self.attributes.__class__(
+                self.instance, context={'field_info': field_info.fields}
+            ).data, [], 'attributes'
+        )
+        relationships_serializer = self.relationships.__class__(
+            self.instance, context={
                 'field_info': field_info.forward_relations, 
                 'is_included_needed': True
             }
         )
-        relationships = relationships_serializer.data
-        if relationships:
-            object_data['relationships'] = relationships
-            if not data.get('included'):
-                data['included'] = {}
-            for obj in relationships_serializer._context['included_data']:
-                data['included'][f'{obj["type"]}_{obj["id"]}'] = obj
-        data['data'].append(object_data)
-        if data.get('included'):
-            data['included'] = sorted(
-                list(data['included'].values()), 
-                key=lambda x: (x['type'], x['id'])
+        fields['relationships'] = JSONBoundField(
+            fields['relationships'], relationships_serializer.data, [], 'relationships'
+        )
+        if fields['relationships'].value:
+            included = {f'{obj["type"]}_{obj["id"]}': dict(obj) for obj in 
+                        relationships_serializer._context['included_data']}
+            fields['included'] = JSONBoundField(
+                fields['included'], sorted(
+                    list(included.values()), 
+                    key=lambda x: (x['type'], x['id'])
+                ), [], 'included'
             )
-        return data
-    
-    @property
-    def data(self):
-        if hasattr(self, 'initial_data') and not hasattr(self, '_validated_data'):
-            msg = (
-                'When a serializer is passed a `data` keyword argument you '
-                'must call `.is_valid()` before attempting to access the '
-                'serialized `.data` representation.\n'
-                'You should either call `.is_valid()` first, '
-                'or access `.initial_data` instead.'
-            )
-            raise AssertionError(msg)
+        return fields
 
-        if not hasattr(self, '_data'):
-            if self.instance is not None and not getattr(self, '_errors', None):
-                self._data = self.to_representation(self.instance)
-            elif hasattr(self, '_validated_data') and not getattr(self, '_errors', None):
-                self._data = self.to_representation(self.validated_data)
-            else:
-                self._data = self.get_initial()
-        return self._data
+    def get_fields(self):
+        return {
+            'type': self.type, 'id': self.id, 
+            'attributes': self.attributes, 
+            'relationships': self.relationships,
+            'included': self.included
+        }
+
+    def to_representation(self, instance):
+        self.instance = instance
+        fields = self.fields
+        return {'data':[{**{name: fields[name].value for name in 
+                            ['type', 'id', 'attributes', 'relationships']}}], 
+                'included': fields['included'].value}
