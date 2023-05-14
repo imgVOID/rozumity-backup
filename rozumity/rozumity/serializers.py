@@ -10,6 +10,8 @@ from rest_framework.utils.serializer_helpers import (
 from rest_framework.fields import JSONField, CharField, IntegerField
 from asgiref.sync import sync_to_async
 
+BoundField.field_name = ''
+
 
 class NotSelectedForeignKey(ImproperlyConfigured):
     def __init__(self, message=None):
@@ -30,34 +32,41 @@ class NotPrefetchedManyToMany(ImproperlyConfigured):
         super().__init__(self.message)
 
 
-class JSONAPIInitialSerializer(serializers.BaseSerializer):
+class JSONAPITypeIdSerializer(serializers.BaseSerializer):
+    type = CharField()
+    id = IntegerField()
+    
+    @property
+    def fields(self):
+        fields = self.get_fields()
+        type_val = self.instance.__class__.__name__.lower()
+        return {'type': BoundField(fields['type'], type_val, [], 'type'), 
+                'id': BoundField(fields['id'], self.instance.id, [], 'id')}
+    
+    def get_fields(self):
+        return {'type': self.type, 'id': self.id}
+        
     def to_representation(self, instance):
-        return {
-            'type': instance.__class__.__name__.lower(), 
-            'id': instance.id
-        }
+        return {name:field.value for name, field in self.fields.items()}
 
 
 class JSONAPIAttributesSerializer(serializers.BaseSerializer):
-    @cached_property
+    @property
     def fields(self):
-        fields = {}
-        for name, field in self.get_fields().items():
-            setattr(field, 'value', getattr(self.instance, name))
-            fields[name] = field
-        return fields
+        return {name: BoundField(field, getattr(self.instance, name), [], name)
+                for name, field in self.get_fields().items()}
     
     def get_fields(self):
         return dict(self._context.get('field_info', 
                                       get_field_info(self.instance).fields))
     
     def to_representation(self, instance):
-        self.instance = instance
         return {name: field.value for name, field in self.fields.items()}
 
 
+# try to pass included not in the context but in the bound jsonfield
 class JSONAPIRelationsSerializer(serializers.BaseSerializer):
-    @cached_property
+    @property
     def fields(self):
         if not self._context.get('included_data'):
             self._context['included_data'] = []
@@ -71,19 +80,18 @@ class JSONAPIRelationsSerializer(serializers.BaseSerializer):
             else:
                 objects_list = [getattr(self.instance, name)]
             for object in objects_list:
-                data_initial = JSONAPIInitialSerializer(object).data
-                value.append(data_initial)
+                type_id = JSONAPITypeIdSerializer(object).data
+                value.append(type_id)
                 if self._context.get('is_included_needed'):
-                    data_included = {**data_initial}
+                    data_included = {**type_id}
                     data_included['attributes'] = JSONAPIAttributesSerializer(object).data
                     relatons = self.__class__(object).data
                     if relatons:
                         data_included['relations'] = relatons
                     self._context['included_data'].append(data_included)
-            setattr(field, 'value', {
-                'data': value.pop() if len(value) == 1 else value
-            })
-            fields[name] = field
+            fields[name] = BoundField(
+                field, {'data': value.pop() if len(value) == 1 else value}, [], name
+            )
         return fields
     
     def get_fields(self):
@@ -91,12 +99,9 @@ class JSONAPIRelationsSerializer(serializers.BaseSerializer):
                                       get_field_info(self.instance).forward_relations))
         
     def to_representation(self, instance):
-        self.instance = instance
         try:
-            data = {
-                name:field.value for name, field 
-                in self.fields.items()
-            }
+            data = {name: field.value for name, field 
+                    in self.fields.items()}
         except AttributeError as e:
             raise NotPrefetchedManyToMany from e
         except SynchronousOnlyOperation as e:
@@ -154,21 +159,16 @@ class JSONAPISerializer(serializers.BaseSerializer):
     def fields(self):
         fields = self.get_fields()
         field_info = self._context.get('field_info', get_field_info(self.instance))
-        BoundField.field_name = ''
-        initial_data = JSONAPIInitialSerializer(self.instance).data
+        initial_data = JSONAPITypeIdSerializer(self.instance).data
+        relationships_serializer = self.relationships.__class__(self.instance, context={
+            'field_info': field_info.forward_relations, 'is_included_needed': True
+        })
         for title in ['type', 'id']:
-            BoundField.field_name = title
             fields[title] = BoundField(fields[title], initial_data[title], [], title)
         fields['attributes'] = JSONBoundField(
             fields['attributes'], self.attributes.__class__(
                 self.instance, context={'field_info': field_info.fields}
             ).data, [], 'attributes'
-        )
-        relationships_serializer = self.relationships.__class__(
-            self.instance, context={
-                'field_info': field_info.forward_relations, 
-                'is_included_needed': True
-            }
         )
         fields['relationships'] = JSONBoundField(
             fields['relationships'], relationships_serializer.data, [], 'relationships'
@@ -193,8 +193,14 @@ class JSONAPISerializer(serializers.BaseSerializer):
         }
 
     def to_representation(self, instance):
-        self.instance = instance
-        fields = self.fields
-        return {'data':[{**{name: fields[name].value for name in 
-                            ['type', 'id', 'attributes', 'relationships']}}], 
-                'included': fields['included'].value}
+        try:
+            fields = self.fields
+        except AttributeError as e:
+            raise NotPrefetchedManyToMany from e
+        except SynchronousOnlyOperation as e:
+            raise NotSelectedForeignKey from e
+        else:
+            return {'data':[{
+                **{name: fields[name].value for name in 
+                   ['type', 'id', 'attributes', 'relationships']}
+                }], 'included': fields['included'].value}
