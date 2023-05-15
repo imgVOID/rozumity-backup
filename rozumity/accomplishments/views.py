@@ -7,7 +7,7 @@ from aiofiles import open
 
 from cities_light.models import Country
 from rozumity.paginations import LimitOffsetAsyncPagination
-from rozumity.serializers import JSONAPISerializer
+from rozumity.serializers import JSONAPISerializer, JSONAPITypeIdSerializer, JSONAPIAttributesSerializer, JSONAPIRelationsSerializer
 
 from .models import University, Test
 from .permissions import UniversityPermission
@@ -35,6 +35,36 @@ class TestViewSet(ViewSet):
         else:
             response = Response(status=404)
         return response
+    
+    async def create(self, request):
+        data = request.data
+        serializer = JSONAPITypeIdSerializer(
+            data=data, many=False, context={'request': request}
+        )
+        serializer_attributes = JSONAPIAttributesSerializer(
+            data=data, many=False, context={'request': request,}
+        )
+        serializer_relationships = JSONAPIRelationsSerializer(
+            data=data, many=False, context={
+                'request': request, 
+                'app_name': __package__.rsplit('.', 1)[-1]
+            }
+        )
+        response_data = {}
+        if serializer.is_valid():
+            response_data.update(serializer.validated_data)
+        else:
+            response_data.update(serializer.errors)
+        if serializer_attributes.is_valid():
+            response_data['attributes'] = serializer_attributes.validated_data
+        else:
+            response_data.update(serializer_attributes.errors)
+        if serializer_relationships.is_valid():
+            response_data['relationships'] = serializer_relationships.validated_data
+        else:
+            response_data.update(serializer_relationships.errors)
+        return Response(data=response_data, status=404)
+
 
 # TODO: retrieve
 # TODO: serialize when there are many foreign key fields
