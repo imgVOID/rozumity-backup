@@ -7,7 +7,8 @@ from aiofiles import open
 
 from cities_light.models import Country
 from rozumity.paginations import LimitOffsetAsyncPagination
-from rozumity.serializers import JSONAPISerializer, JSONAPITypeIdSerializer, JSONAPIAttributesSerializer, JSONAPIRelationsSerializer
+from rozumity.serializers import (JSONAPISerializer, JSONAPITypeIdSerializer, JSONAPIAttributesSerializer, 
+                                  JSONAPIRelationsValidationSerializer, JSONAPIValidationSerializer)
 
 from .models import University, Test
 from .permissions import UniversityPermission
@@ -44,12 +45,20 @@ class TestViewSet(ViewSet):
         serializer_attributes = JSONAPIAttributesSerializer(
             data=data, many=False, context={'request': request,}
         )
-        serializer_relationships = JSONAPIRelationsSerializer(
+        serializer_relationships = JSONAPIRelationsValidationSerializer(
             data=data, many=False, context={
                 'request': request, 
                 'app_name': __package__.rsplit('.', 1)[-1]
             }
         )
+        serializer_full = JSONAPIValidationSerializer(
+            data=data, many=False, context={'request': request}
+        )
+        objects = []
+        async for university in Test.objects.prefetch_related(
+            Prefetch('country', to_attr='country_set')
+        ).select_related('city__subregion', 'city__region', 'city__country'):
+            objects.append(university)
         response_data = {}
         if serializer.is_valid():
             response_data.update(serializer.validated_data)
@@ -63,6 +72,12 @@ class TestViewSet(ViewSet):
             response_data['relationships'] = serializer_relationships.validated_data
         else:
             response_data.update(serializer_relationships.errors)
+        serializer_full.is_valid()
+        response_data = serializer_full.validated_data
+        serializer_attributes = JSONAPITypeIdSerializer(
+            objects[0], many=False, context={'request': request,}
+        )
+        print(serializer_attributes.data)
         return Response(data=response_data, status=404)
 
 
