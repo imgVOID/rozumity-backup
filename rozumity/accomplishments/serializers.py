@@ -1,40 +1,32 @@
 
-from rozumity.serializers import JSONAPISerializer, JSONAPIRelSerializer, JSONAPIManager
+from rozumity.serializers import JSONAPISerializer, JSONAPIRelationsSerializer, JSONAPITypeIdSerializer, JSONAPIAttributesSerializer, ValidateFieldType
 from cities_light.models import Country
+from rest_framework import serializers
 from .models import University
 
 
-class UniversityJSONAPISerializer(JSONAPISerializer):
-    class Meta:
-        model = University
+class UniversityAttributesSerializer(JSONAPIAttributesSerializer):
+    title = serializers.CharField(validators=[ValidateFieldType(str)])
 
 
-class UniversityRelJSONAPISerializer(JSONAPIRelSerializer):
-    class Meta:
-        model = University
+class UniversityRelationsSerializer(JSONAPIRelationsSerializer):
+    country = JSONAPITypeIdSerializer()
 
 
-class CountryJSONAPISerializer(JSONAPISerializer):
-    class Meta:
-        model = Country
+class UniversitySerializer(JSONAPISerializer):
+    attributes = UniversityAttributesSerializer()
+    relationships = UniversityRelationsSerializer()
 
 
-class JSONAPIUniversityManager(JSONAPIManager):
-    def __init__(self, objects, related=None, request=None):
-        super().__init__(
-            objects, UniversityRelJSONAPISerializer,
-            related, CountryJSONAPISerializer, request
-        )
-        self._related_url = 'locations/countries/'
-    
-    async def get_link_related(self):
-        url = await self.get_link()
-        return url.split('api/')[0] + 'api/' + self._related_url
+class TestAttributesSerializer(JSONAPIAttributesSerializer):
+    title = serializers.CharField(validators=[ValidateFieldType(str)])
 
 
-# TODO: to make a manager for the patch (bulk deletion), only ID and type
-class JSONAPIUniversityLimitedManager(JSONAPIManager):
-    def __init__(self, objects):
-        super().__init__(
-            objects, UniversityJSONAPISerializer
-        )
+class TestRelationsSerializer(JSONAPIRelationsSerializer):
+    city = JSONAPITypeIdSerializer()
+    country = serializers.ListField(child=JSONAPITypeIdSerializer())
+
+
+class TestSerializer(JSONAPISerializer):
+    attributes = TestAttributesSerializer()
+    relationships = TestRelationsSerializer()

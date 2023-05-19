@@ -7,11 +7,11 @@ from aiofiles import open
 
 from cities_light.models import Country
 from rozumity.paginations import LimitOffsetAsyncPagination
-from rozumity.serializers import (JSONAPISerializer, JSONAPITypeIdSerializer, JSONAPIAttributesSerializer, 
-                                  JSONAPIRelationsValidationSerializer, JSONAPIValidationSerializer)
+from rozumity.serializers import JSONAPISerializer
 
 from .models import University, Test
 from .permissions import UniversityPermission
+from .serializers import UniversitySerializer, TestSerializer
 
 
 class TestViewSet(ViewSet):
@@ -21,17 +21,19 @@ class TestViewSet(ViewSet):
     
     async def list(self, request):
         objects = []
-        async for university in Test.objects.prefetch_related(
-            Prefetch('country', to_attr='country_set')
-        ).select_related('city__subregion', 'city__region', 'city__country'):
+        async for university in Test.objects.prefetch_related('country').select_related(
+            'city__subregion', 'city__region', 'city__country'
+        ):
             objects.append(university)
         if objects:
             objects = await self.pagination_class.paginate_queryset(
                 queryset=objects, request=request
             )
-            data = JSONAPISerializer(
-                objects, many=True, context={'request': request}
-            ).data
+            data = TestSerializer(
+                    await self.pagination_class.paginate_queryset(
+                        queryset=objects, request=request
+                    ), many=True, context={'request': request}
+                ).data
             response = await self.pagination_class.get_paginated_response(data)
         else:
             response = Response(status=404)
@@ -39,45 +41,11 @@ class TestViewSet(ViewSet):
     
     async def create(self, request):
         data = request.data
-        serializer = JSONAPITypeIdSerializer(
+        serializer_full = TestSerializer(
             data=data, many=False, context={'request': request}
         )
-        serializer_attributes = JSONAPIAttributesSerializer(
-            data=data, many=False, context={'request': request,}
-        )
-        serializer_relationships = JSONAPIRelationsValidationSerializer(
-            data=data, many=False, context={
-                'request': request, 
-                'app_name': __package__.rsplit('.', 1)[-1]
-            }
-        )
-        serializer_full = JSONAPIValidationSerializer(
-            data=data, many=False, context={'request': request}
-        )
-        objects = []
-        async for university in Test.objects.prefetch_related(
-            Prefetch('country', to_attr='country_set')
-        ).select_related('city__subregion', 'city__region', 'city__country'):
-            objects.append(university)
-        response_data = {}
-        if serializer.is_valid():
-            response_data.update(serializer.validated_data)
-        else:
-            response_data.update(serializer.errors)
-        if serializer_attributes.is_valid():
-            response_data['attributes'] = serializer_attributes.validated_data
-        else:
-            response_data.update(serializer_attributes.errors)
-        if serializer_relationships.is_valid():
-            response_data['relationships'] = serializer_relationships.validated_data
-        else:
-            response_data.update(serializer_relationships.errors)
         serializer_full.is_valid()
         response_data = serializer_full.validated_data
-        serializer_attributes = JSONAPITypeIdSerializer(
-            objects[0], many=False, context={'request': request,}
-        )
-        print(serializer_attributes.data)
         return Response(data=response_data, status=404)
 
 
@@ -99,7 +67,7 @@ class UniversityViewSet(ViewSet):
         async for university in University.objects.select_related('country').filter(country__code2=alpha2.upper()):
             objects.append(university)
         if objects:
-            data = JSONAPISerializer(
+            data = UniversitySerializer(
                     await self.pagination_class.paginate_queryset(
                         queryset=objects, request=request
                     ), many=True, context={'request': request}
