@@ -376,7 +376,8 @@ class JSONAPIManySerializer(serializers.ListSerializer):
         return ReturnDict(self._data, serializer=self)
 
 
-# Fix errors response if is_valid fails
+# TODO: Fix errors response if is_valid fails
+# TODO: Write the get_value method
 class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
     type = CharField()
     id = IntegerField()
@@ -455,19 +456,6 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
         if any(errors.values()):
             raise ValidationError({'errors': errors})
         return ret
-    
-    def is_valid(self):
-        if not hasattr(self, '_validated_data'):
-            try:
-                self._validated_data = self.to_internal_value(self.initial_data)
-            except ValidationError as exc:
-                self._validated_data = {}
-                self._errors = exc.detail
-            else:
-                self._errors = {}
-        if self._errors:
-            raise ValidationError(self.errors)
-        return not bool(self._errors)
     
     def to_representation(self, obj):
         try:
