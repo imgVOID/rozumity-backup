@@ -36,15 +36,6 @@ class NotSelectedForeignKey(ImproperlyConfigured):
         super().__init__(self.message)
 
 
-class NotPrefetchedManyToMany(ImproperlyConfigured):
-    def __init__(self, message=None):
-        self.message = (
-            'Model.objects.prefetch_related(Prefetch("<many_to_many_field_name>", '
-            'to_attr="<many_to_many_field_name>_set")) must be specified.'
-        )
-        super().__init__(self.message)
-
-
 class ValidateFieldType:
     def __init__(self, python_type):
         self.type = python_type
@@ -492,8 +483,6 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
     def to_representation(self, obj):
         try:
             fields = self.fields
-        except AttributeError as e:
-            raise NotPrefetchedManyToMany from e
         except SynchronousOnlyOperation as e:
             raise NotSelectedForeignKey from e
         else:
