@@ -10,7 +10,7 @@ class UniversitySerializer(JSONAPISerializer):
         title = serializers.CharField(validators=[ValidateFieldType(str)])
     
     class Relationships(JSONAPISerializer.Relationships):
-        country = serializers.ListField(child=JSONAPISerializer.Meta.type())
+        country = serializers.ListField(child=JSONAPISerializer.Type())
 
 
 class TestSerializer(JSONAPISerializer):
@@ -19,5 +19,5 @@ class TestSerializer(JSONAPISerializer):
         title = serializers.CharField(validators=[ValidateFieldType(str)])
     
     class Relationships(JSONAPISerializer.Relationships):
-        city = JSONAPISerializer.Meta.type()
-        country = serializers.ListField(child=JSONAPISerializer.Meta.type())
+        city = JSONAPISerializer.Type()
+        country = serializers.ListField(child=JSONAPISerializer.Type())

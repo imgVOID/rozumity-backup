@@ -46,8 +46,46 @@ class ValidateFieldType:
             raise serializers.ValidationError(message)
 
 
+class SerializerMetaclass(type):
+    @classmethod
+    def _get_declared_fields(cls, bases, attrs):
+        obj_info = attrs.get('Type', None)
+        attributes = attrs.get('Attributes', None)
+        relationships = attrs.get('Relationships', None)
+        if attributes:
+            attrs['attributes'] = attributes()
+        if relationships:
+            attrs['relationships'] = relationships()
+        if obj_info:
+            obj_info = obj_info()
+            attrs.update(obj_info._declared_fields)
+        
+        fields = [(field_name, attrs.pop(field_name))
+                  for field_name, obj in list(attrs.items())
+                  if isinstance(obj, Field)]
+        fields.sort(key=lambda x: x[1]._creation_counter)
+
+        known = set(attrs)
+
+        def visit(name):
+            known.add(name)
+            return name
+
+        base_fields = [
+            (visit(name), f)
+            for base in bases if hasattr(base, '_declared_fields')
+            for name, f in base._declared_fields.items() if name not in known
+        ]
+
+        return dict(base_fields + fields)
+
+    def __new__(cls, name, bases, attrs):
+        attrs['_declared_fields'] = cls._get_declared_fields(bases, attrs)
+        return super().__new__(cls, name, bases, attrs)
+
+
 # TODO: rewrite the Field functionality
-class BaseSerializer(Field):
+class JSONAPIBaseSerializer(Field):
     def __init__(self, instance=None, data=None, **kwargs):
         self.instance = instance
         if data is not None:
@@ -90,6 +128,12 @@ class BaseSerializer(Field):
         meta = getattr(cls, 'Meta', None)
         list_serializer_class = getattr(meta, 'list_serializer_class', serializers.ListSerializer)
         return list_serializer_class(*args, **list_kwargs)
+    
+    @property
+    def fields(self):
+        fields = {name: BoundField(field, self.get_value(name), [], name)
+                  for name, field in self.get_fields().items()}
+        return fields
 
     @property
     def data(self):
@@ -113,60 +157,18 @@ class BaseSerializer(Field):
         return self._data
 
     @property
-    def errors(self):
-        if not hasattr(self, '_errors'):
-            msg = 'You must call `.is_valid()` before accessing `.errors`.'
-            raise AssertionError(msg)
-        return self._errors
-
-    @property
     def validated_data(self):
         if not hasattr(self, '_validated_data'):
             msg = 'You must call `.is_valid()` before accessing `.validated_data`.'
             raise AssertionError(msg)
         return self._validated_data
 
-
-class SerializerMetaclass(type):
-    @classmethod
-    def _get_declared_fields(cls, bases, attrs):
-        attributes = attrs.get('Attributes', None)
-        relationships = attrs.get('Relationships', None)
-        if attributes:
-            attrs['attributes'] = attributes()
-        if relationships:
-            attrs['relationships'] = relationships()
-        
-        fields = [(field_name, attrs.pop(field_name))
-                  for field_name, obj in list(attrs.items())
-                  if isinstance(obj, Field)]
-        fields.sort(key=lambda x: x[1]._creation_counter)
-
-        known = set(attrs)
-
-        def visit(name):
-            known.add(name)
-            return name
-
-        base_fields = [
-            (visit(name), f)
-            for base in bases if hasattr(base, '_declared_fields')
-            for name, f in base._declared_fields.items() if name not in known
-        ]
-
-        return dict(base_fields + fields)
-
-    def __new__(cls, name, bases, attrs):
-        attrs['_declared_fields'] = cls._get_declared_fields(bases, attrs)
-        return super().__new__(cls, name, bases, attrs)
-
-
-class JSONAPIBaseSerializer(BaseSerializer, metaclass=SerializerMetaclass):
     @property
-    def fields(self):
-        fields = {name: BoundField(field, self.get_value(name), [], name)
-                  for name, field in self.get_fields().items()}
-        return fields
+    def errors(self):
+        if not hasattr(self, '_errors'):
+            msg = 'You must call `.is_valid()` before accessing `.errors`.'
+            raise AssertionError(msg)
+        return self._errors
     
     def get_fields(self):
         return deepcopy(self._declared_fields)
@@ -348,7 +350,7 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
         return ret
 
 
-class JSONAPIManySerializer(BaseSerializer):
+class JSONAPIManySerializer(JSONAPIBaseSerializer):
     child = None
     many = True
     
@@ -397,9 +399,10 @@ class JSONAPIManySerializer(BaseSerializer):
 # TODO: Fix errors response if is_valid fails
 # TODO: Write the get_value method
 class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
-    type = CharField()
-    id = IntegerField()
     included = JSONField()
+    
+    class Type(JSONAPITypeIdSerializer):
+        pass
     
     class Attributes(JSONAPIAttributesSerializer):
         pass
@@ -409,7 +412,6 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
     
     class Meta:
         list_serializer_class = JSONAPIManySerializer
-        type = JSONAPITypeIdSerializer
     
     @cached_property
     def fields(self):
