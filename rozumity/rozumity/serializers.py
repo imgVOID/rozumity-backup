@@ -16,7 +16,14 @@ from rest_framework.fields import JSONField, CharField, IntegerField, Field, Ski
 from accomplishments.models import Test
 from asgiref.sync import sync_to_async
 
+    
+def bind(self, field_name, parent):
+    self.field_name = field_name
+    self.parent = parent
+
+
 BoundField.field_name = ''
+Field.bind = bind
 
 
 class NotSelectedForeignKey(ImproperlyConfigured):
@@ -48,6 +55,7 @@ class ValidateFieldType:
             raise serializers.ValidationError(message)
 
 
+# TODO: rewrite the Field functionality
 class BaseSerializer(Field):
     def __init__(self, instance=None, data=None, **kwargs):
         self.instance = instance
@@ -131,6 +139,13 @@ class BaseSerializer(Field):
 class SerializerMetaclass(type):
     @classmethod
     def _get_declared_fields(cls, bases, attrs):
+        attributes = attrs.get('Attributes', None)
+        relationships = attrs.get('Relationships', None)
+        if attributes:
+            attrs['attributes'] = attributes()
+        if relationships:
+            attrs['relationships'] = relationships()
+        
         fields = [(field_name, attrs.pop(field_name))
                   for field_name, obj in list(attrs.items())
                   if isinstance(obj, Field)]
@@ -330,11 +345,11 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
                     pass
                 else:
                     if len(value) == 1:
-                        ret[name] = validated_value
+                        ret[name] = {'data': validated_value}
                     else:
                         if not ret.get(name):
-                            ret[name] = []
-                        ret[name].append(validated_value)
+                            ret[name] = {'data': []}
+                        ret[name]['data'].append(validated_value)
         errors = {name: [str(error) for error in field.errors] 
                   for name, field in fields.items() if field.errors}
         if any(errors.values()):
@@ -342,7 +357,19 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
         return ret
 
 
-class JSONAPIManySerializer(serializers.ListSerializer):
+class JSONAPIManySerializer(BaseSerializer):
+    child = None
+    many = True
+    
+    def __init__(self, *args, **kwargs):
+        self.child = kwargs.pop('child', deepcopy(self.child))
+        self.allow_empty = kwargs.pop('allow_empty', True)
+        self.max_length = kwargs.pop('max_length', None)
+        self.min_length = kwargs.pop('min_length', None)
+        assert self.child is not None, '`child` is a required argument.'
+        super().__init__(*args, **kwargs)
+        self.child.bind(field_name='', parent=self)
+    
     def to_representation(self, data):
         self.iterable = data.all() if isinstance(data, BaseManager) else data
         data = {'data': []}
@@ -381,12 +408,17 @@ class JSONAPIManySerializer(serializers.ListSerializer):
 class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
     type = CharField()
     id = IntegerField()
-    attributes = JSONAPIAttributesSerializer()
-    relationships = JSONAPIRelationsSerializer()
     included = JSONField()
+    
+    class Attributes(JSONAPIAttributesSerializer):
+        pass
+    
+    class Relationships(JSONAPIRelationsSerializer):
+        pass
     
     class Meta:
         list_serializer_class = JSONAPIManySerializer
+        type = JSONAPITypeIdSerializer
     
     @cached_property
     def fields(self):

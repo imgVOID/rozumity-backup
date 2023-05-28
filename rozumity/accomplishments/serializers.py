@@ -1,32 +1,23 @@
 
-from rozumity.serializers import JSONAPISerializer, JSONAPIRelationsSerializer, JSONAPITypeIdSerializer, JSONAPIAttributesSerializer, ValidateFieldType
-from cities_light.models import Country
 from rest_framework import serializers
-from .models import University
 
-
-class UniversityAttributesSerializer(JSONAPIAttributesSerializer):
-    title = serializers.CharField(validators=[ValidateFieldType(str)])
-
-
-class UniversityRelationsSerializer(JSONAPIRelationsSerializer):
-    country = JSONAPITypeIdSerializer()
+from rozumity.serializers import JSONAPISerializer, ValidateFieldType
 
 
 class UniversitySerializer(JSONAPISerializer):
-    attributes = UniversityAttributesSerializer()
-    relationships = UniversityRelationsSerializer()
-
-
-class TestAttributesSerializer(JSONAPIAttributesSerializer):
-    title = serializers.CharField(validators=[ValidateFieldType(str)])
-
-
-class TestRelationsSerializer(JSONAPIRelationsSerializer):
-    city = JSONAPITypeIdSerializer()
-    country = serializers.ListField(child=JSONAPITypeIdSerializer())
+    
+    class Attributes(JSONAPISerializer.Attributes):
+        title = serializers.CharField(validators=[ValidateFieldType(str)])
+    
+    class Relationships(JSONAPISerializer.Relationships):
+        country = serializers.ListField(child=JSONAPISerializer.Meta.type())
 
 
 class TestSerializer(JSONAPISerializer):
-    attributes = TestAttributesSerializer()
-    relationships = TestRelationsSerializer()
+    
+    class Attributes(JSONAPISerializer.Attributes):
+        title = serializers.CharField(validators=[ValidateFieldType(str)])
+    
+    class Relationships(JSONAPISerializer.Relationships):
+        city = JSONAPISerializer.Meta.type()
+        country = serializers.ListField(child=JSONAPISerializer.Meta.type())
