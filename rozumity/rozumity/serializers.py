@@ -3,28 +3,16 @@ from django.db.models.manager import BaseManager
 from django.core.exceptions import ImproperlyConfigured, SynchronousOnlyOperation
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.apps import apps
-from django.forms.models import model_to_dict
 from rest_framework import serializers
 from django.utils.functional import cached_property
 from rest_framework.settings import api_settings
 from rest_framework.utils.model_meta import get_field_info
 from rest_framework.exceptions import ValidationError
 from rest_framework.relations import Hyperlink, PKOnlyObject
-from rest_framework.utils.serializer_helpers import (
-    BindingDict, BoundField, JSONBoundField, NestedBoundField, ReturnDict
-)
-from rest_framework.fields import JSONField, CharField, IntegerField, Field, SkipField, empty, set_value, get_error_detail
-from accomplishments.models import Test
+from rest_framework.utils.serializer_helpers import (ReturnDict)
+from rest_framework.fields import (JSONField, CharField, IntegerField, 
+                                   Field, SkipField, get_error_detail)
 from asgiref.sync import sync_to_async
-
-    
-def bind(self, field_name, parent):
-    self.field_name = field_name
-    self.parent = parent
-
-
-BoundField.field_name = ''
-Field.bind = bind
 
 
 class NotSelectedForeignKey(ImproperlyConfigured):
@@ -47,46 +35,11 @@ class ValidateFieldType:
             raise serializers.ValidationError(message)
 
 
-class SerializerMetaclass(type):
-    @classmethod
-    def _get_declared_fields(cls, bases, attrs):
-        obj_info = attrs.get('Type', None)
-        attributes = attrs.get('Attributes', None)
-        relationships = attrs.get('Relationships', None)
-        if attributes:
-            attrs['attributes'] = attributes()
-        if relationships:
-            attrs['relationships'] = relationships()
-        if obj_info:
-            obj_info = obj_info()
-            attrs.update(obj_info._declared_fields)
-        
-        fields = [(field_name, attrs.pop(field_name))
-                  for field_name, obj in list(attrs.items())
-                  if isinstance(obj, Field)]
-        fields.sort(key=lambda x: x[1]._creation_counter)
-
-        known = set(attrs)
-
-        def visit(name):
-            known.add(name)
-            return name
-
-        base_fields = [
-            (visit(name), f)
-            for base in bases if hasattr(base, '_declared_fields')
-            for name, f in base._declared_fields.items() if name not in known
-        ]
-
-        return dict(base_fields + fields)
-
-    def __new__(cls, name, bases, attrs):
-        attrs['_declared_fields'] = cls._get_declared_fields(bases, attrs)
-        return super().__new__(cls, name, bases, attrs)
-
-
 # TODO: rewrite the Field functionality
-class JSONAPIBaseSerializer(Field):
+class JSONAPIBaseSerializer:
+    _creation_counter = 0
+    source = None
+    
     def __init__(self, instance=None, data=None, **kwargs):
         self.instance = instance
         if data is not None:
@@ -97,11 +50,9 @@ class JSONAPIBaseSerializer(Field):
         super().__init__(**kwargs)
 
     def __new__(cls, *args, **kwargs):
-        # We override this method in order to automatically create
-        # `ListSerializer` classes instead when `many=True` is set.
         if kwargs.pop('many', False):
             return cls.many_init(*args, **kwargs)
-        return super().__new__(cls, *args, **kwargs)
+        return super().__new__(cls)
 
     # Allow type checkers to make serializers generic.
     def __class_getitem__(cls, *args, **kwargs):
@@ -135,9 +86,10 @@ class JSONAPIBaseSerializer(Field):
         """
         A dictionary of {field_name: field_instance}.
         """
-        fields = BindingDict(self)
-        for key, value in self.get_fields().items():
-            fields[key] = value
+        fields = self.get_fields()
+        for key, value in fields.items():
+            value.field_name = key
+            value.parent = self
         return fields
 
     @property
@@ -151,18 +103,26 @@ class JSONAPIBaseSerializer(Field):
                 'or access `.initial_data` instead.'
             )
             raise AssertionError(msg)
+        
+        errors = getattr(self, '_errors', None)
+        if errors:
+            return errors
 
         if not hasattr(self, '_data'):
-            if self.instance is not None and not getattr(self, '_errors', None):
+            if self.instance is not None:
                 self._data = self.to_representation(self.instance)
-            elif hasattr(self, '_validated_data') and not getattr(self, '_errors', None):
-                self._data = self.to_representation(self.validated_data)
+            elif hasattr(self, '_validated_data'):
+                self._data = self._validated_data
             else:
                 self._data = self.get_initial()
         return self._data
     
     def validate(self, attrs):
         return attrs
+    
+    def bind(self, field_name, parent):
+        self.field_name = field_name
+        self.parent = parent
     
     @property
     def validated_data(self):
@@ -177,6 +137,15 @@ class JSONAPIBaseSerializer(Field):
             msg = 'You must call `.is_valid()` before accessing `.errors`.'
             raise AssertionError(msg)
         return self._errors
+    
+    def get_initial(self):
+        """
+        Return a value to use when the field is being returned as a primitive
+        value, without any object instance.
+        """
+        if callable(self.initial):
+            return self.initial()
+        return self.initial
     
     def get_fields(self):
         return deepcopy(self._declared_fields)
@@ -254,6 +223,42 @@ class JSONAPIBaseSerializer(Field):
             'Method JSONAPIBaseSerializer.to_representation'
             '(self, instance) is not implemented'
         )
+
+
+class SerializerMetaclass(type):
+    @classmethod
+    def _get_declared_fields(cls, bases, attrs):
+        obj_info = attrs.get('Type', None)
+        attributes = attrs.get('Attributes', None)
+        relationships = attrs.get('Relationships', None)
+        if issubclass(obj_info.__class__, cls):
+            attrs.update(obj_info._declared_fields)
+        if attributes:
+            attrs['attributes'] = attributes()
+        if relationships:
+            attrs['relationships'] = relationships()
+        
+        fields = [(field_name, attrs.pop(field_name))
+                  for field_name, obj in list(attrs.items())
+                  if isinstance(obj, Field) or isinstance(obj, JSONAPIBaseSerializer)]
+
+        known = set(attrs)
+
+        def visit(name):
+            known.add(name)
+            return name
+
+        base_fields = [
+            (visit(name), f)
+            for base in bases if hasattr(base, '_declared_fields')
+            for name, f in base._declared_fields.items() if name not in known
+        ]
+
+        return dict(base_fields + fields)
+
+    def __new__(cls, name, bases, attrs):
+        attrs['_declared_fields'] = cls._get_declared_fields(bases, attrs)
+        return super().__new__(cls, name, bases, attrs)
 
 
 class JSONAPITypeIdSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
@@ -392,7 +397,8 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
         self.min_length = kwargs.pop('min_length', None)
         assert self.child is not None, '`child` is a required argument.'
         super().__init__(*args, **kwargs)
-        self.child.bind(field_name='', parent=self)
+        self.child.field_name = self
+        self.child.parent = self
     
     def to_representation(self, data):
         self.iterable = data.all() if isinstance(data, BaseManager) else data
@@ -448,8 +454,9 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
         ret = {}
         errors = {}
         fields = self.fields
-        del fields['included']
         for name, field in fields.items():
+            if name == 'included':
+                continue
             try:
                 field = field.__class__(data={name: data[name]})
             except TypeError:
@@ -469,20 +476,24 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
         else:
             return ret
     
-    def to_representation(self, obj):
+    def to_representation(self, instance):
         try:
             fields = self.fields
         except SynchronousOnlyOperation as e:
             raise NotSelectedForeignKey from e
         else:
-            relationships_serializer = self.Relationships(obj, included=True)
-            obj_map = {
-                **self.Type(obj).data,
-                'attributes': self.Attributes(obj).data,
-                'relationships': relationships_serializer.data,
-                'included': relationships_serializer.included,
+            serializers_map = {
+                'attributes': self.Attributes(instance),
+                'relationships': self.Relationships(instance, included=True)
             }
+            obj_map = {**self.Type(instance).data}
+            for key, val in serializers_map.items():
+                if len(serializers_map[key]._declared_fields):
+                    obj_map[key] = val.data
+                else:
+                    obj_map[key] = {}
+            obj_map['included'] = serializers_map['relationships'].included
             return {'data': [{
                 **{name: self.get_value(name, obj_map) for name in 
-                   fields.keys() if name != 'included'}
+                   fields.keys() if name in obj_map and name != 'included'}
                 }], 'included': self.get_value('included', obj_map)}
