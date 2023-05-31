@@ -121,7 +121,7 @@ class JSONAPIBaseSerializer:
         return fields
 
     @property
-    def data(self):
+    async def data(self):
         if hasattr(self, 'initial_data') and not hasattr(self, '_validated_data'):
             msg = (
                 'When a serializer is passed a `data` keyword argument you '
@@ -138,7 +138,7 @@ class JSONAPIBaseSerializer:
 
         if not hasattr(self, '_data'):
             if self.instance is not None:
-                self._data = self.to_representation(self.instance)
+                self._data = await self.to_representation(self.instance)
             elif hasattr(self, '_validated_data'):
                 self._data = self._validated_data
             else:
@@ -246,7 +246,7 @@ class JSONAPIBaseSerializer:
                 dictionary = dictionary.get('relationships')
         return dictionary.get(field_name, None)
     
-    def to_representation(self, instance):
+    async def to_representation(self, instance):
         raise NotImplemented(
             'Method JSONAPIBaseSerializer.to_representation'
             '(self, instance) is not implemented'
@@ -293,7 +293,7 @@ class JSONAPITypeIdSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetacla
     type = CharField(validators=[ValidateFieldType(str)])
     id = IntegerField(validators=[ValidateFieldType(int)])
     
-    def to_representation(self, instance):
+    async def to_representation(self, instance):
         try:
             fields = self.fields
         except SynchronousOnlyOperation as e:
@@ -304,7 +304,7 @@ class JSONAPITypeIdSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetacla
 
 
 class JSONAPIAttributesSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
-    def to_representation(self, instance):
+    async def to_representation(self, instance):
         try:
             fields = self.fields
         except SynchronousOnlyOperation as e:
@@ -322,12 +322,12 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
         super().__init__(instance, data, **kwargs)
     
     @property
-    def included(self):
+    async def included(self):
         if self._included is not None and not self._included:
-            self.to_representation(self.instance)
+            await self.to_representation(self.instance)
         return self._included
     
-    def _serialize_included(self, objects_list):
+    async def _serialize_included(self, objects_list):
         for obj in objects_list:
             fields = get_field_info(obj)
             data_included = {'type': obj.__class__.__name__.lower(), 'id': obj.id}
@@ -345,8 +345,9 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
                     objects_list = [objects_list]
                 if not objects_list:
                     continue
-                objects_list = [JSONAPITypeIdSerializer(inner_obj).data 
+                objects_list = [await JSONAPITypeIdSerializer(inner_obj).data 
                                 for inner_obj in objects_list]
+                objects_list = [val for val in objects_list]
                 data_included['relationships'][relationship] = {
                     'data': objects_list if len(objects_list) > 1 else objects_list.pop()
                 }
@@ -394,7 +395,7 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
         else:
             return ret
     
-    def to_representation(self, instance):
+    async def to_representation(self, instance):
         try:
             fields = self.fields
         except SynchronousOnlyOperation as e:
@@ -407,10 +408,10 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
                 objects_list = val.all()
             except AttributeError:
                 objects_list = [val]
-            value = [JSONAPITypeIdSerializer(obj).data for obj in objects_list]
+            value = [await JSONAPITypeIdSerializer(obj).data for obj in objects_list]
             presentation[key] = {'data': value.pop() if len(value) == 1 else value}
             if self._included is not None:
-                self._serialize_included(objects_list)
+                await self._serialize_included(objects_list)
         return presentation
 
 
@@ -428,16 +429,16 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
         self.child.field_name = self
         self.child.parent = self
     
-    def to_representation(self, data):
+    async def to_representation(self, data):
         self.iterable = data.all() if isinstance(data, BaseManager) else data
         data = {'data': []}
         included = {}
         for obj in self.iterable:
-            obj_data = self.child.__class__(obj).data
+            obj_data = await self.child.__class__(obj).data
             included_obj_data = obj_data.pop('included', None)
             if included_obj_data is not None:
                 included.update({f'{obj["type"]}_{obj["id"]}': dict(obj) for obj 
-                                in included_obj_data})
+                                in await included_obj_data})
             data['data'].append(*obj_data.pop('data'))
         if included:
             data['included'] = sorted(
@@ -447,15 +448,15 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
         return data
     
     @property
-    def data(self):
+    async def data(self):
         if hasattr(self, 'initial_data') and not hasattr(self, '_validated_data'):
             raise AssertionError('you must call `.is_valid()` before attempting '
                                  'to access the serialized `.data` representation.\n')
         if not hasattr(self, '_data'):
             if self.instance is not None and not getattr(self, '_errors', None):
-                self._data = self.to_representation(self.instance)
+                self._data = await self.to_representation(self.instance)
             elif hasattr(self, '_validated_data') and not getattr(self, '_errors', None):
-                self._data = self.to_representation(self.validated_data)
+                self._data = self.validated_data
             else:
                 self._data = self.get_initial()
         return ReturnDict(self._data, serializer=self)
@@ -504,7 +505,7 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
         else:
             return ret
     
-    def to_representation(self, instance):
+    async def to_representation(self, instance):
         try:
             fields = self.fields
         except SynchronousOnlyOperation as e:
@@ -514,12 +515,15 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
                 'attributes': self.Attributes(instance),
                 'relationships': self.Relationships(instance, included=True)
             }
-            obj_map = {**self.Type(instance).data}
-            for key, val in serializers_map.items():
-                if len(serializers_map[key]._declared_fields):
-                    obj_map[key] = val.data
-                else:
-                    obj_map[key] = {}
+            obj_map = {**await self.Type(instance).data}
+            if len(serializers_map['attributes']._declared_fields):
+                obj_map['attributes'] = await serializers_map['attributes'].data
+            else:
+                obj_map['attributes'] = {}
+            if len(serializers_map['relationships']._declared_fields):
+                obj_map['relationships'] = await serializers_map['relationships'].data
+            else:
+                obj_map['relationships'] = {}
             obj_map['included'] = serializers_map['relationships'].included
             return {'data': [{
                 **{name: self.get_value(name, obj_map) for name in 

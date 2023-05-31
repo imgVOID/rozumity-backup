@@ -29,7 +29,7 @@ class TestViewSet(ViewSet):
             objects = await self.pagination_class.paginate_queryset(
                 queryset=objects, request=request
             )
-            data = TestSerializer(
+            data = await TestSerializer(
                     await self.pagination_class.paginate_queryset(
                         queryset=objects, request=request
                     ), many=True, context={'request': request}
@@ -67,7 +67,7 @@ class UniversityViewSet(ViewSet):
         async for university in University.objects.select_related('country').filter(country__code2=alpha2.upper()):
             objects.append(university)
         if objects:
-            data = UniversitySerializer(
+            data = await UniversitySerializer(
                     await self.pagination_class.paginate_queryset(
                         queryset=objects, request=request
                     ), many=True, context={'request': request}
