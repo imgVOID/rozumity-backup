@@ -1,7 +1,9 @@
+import inspect
 from copy import deepcopy
 from django.db.models.manager import BaseManager
 from django.core.exceptions import ImproperlyConfigured, SynchronousOnlyOperation
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import MaxLengthValidator, MinLengthValidator
 from django.apps import apps
 from rest_framework import serializers
 from django.utils.functional import cached_property
@@ -10,6 +12,8 @@ from rest_framework.utils.model_meta import get_field_info
 from rest_framework.exceptions import ValidationError
 from rest_framework.relations import Hyperlink, PKOnlyObject
 from rest_framework.utils.serializer_helpers import (ReturnDict)
+from rest_framework.utils.formatting import lazy_format
+
 from rest_framework.fields import (JSONField, CharField, IntegerField, 
                                    Field, SkipField, get_error_detail)
 from asgiref.sync import sync_to_async
@@ -33,6 +37,30 @@ class ValidateFieldType:
         if type(value) != self.type:
             message = f"The value {value} is wrong type."
             raise serializers.ValidationError(message)
+
+
+class ListField(serializers.ListField):
+    def __init__(self, **kwargs):
+        self.child = kwargs.pop('child', deepcopy(self.child))
+        self.allow_empty = kwargs.pop('allow_empty', True)
+        self.max_length = kwargs.pop('max_length', None)
+        self.min_length = kwargs.pop('min_length', None)
+
+        assert not inspect.isclass(self.child), '`child` has not been instantiated.'
+        assert self.child.source is None, (
+            "The `source` argument is not meaningful when applied to a `child=` field. "
+            "Remove `source=` from the field declaration."
+        )
+
+        serializers.Field.__init__(self, **kwargs)
+        self.child.field_name = ''
+        self.child.parent = self
+        if self.max_length is not None:
+            message = lazy_format(self.error_messages['max_length'], max_length=self.max_length)
+            self.validators.append(MaxLengthValidator(self.max_length, message=message))
+        if self.min_length is not None:
+            message = lazy_format(self.error_messages['min_length'], min_length=self.min_length)
+            self.validators.append(MinLengthValidator(self.min_length, message=message))
 
 
 # TODO: rewrite the Field functionality
@@ -120,10 +148,6 @@ class JSONAPIBaseSerializer:
     def validate(self, attrs):
         return attrs
     
-    def bind(self, field_name, parent):
-        self.field_name = field_name
-        self.parent = parent
-    
     @property
     def validated_data(self):
         if not hasattr(self, '_validated_data'):
@@ -149,6 +173,10 @@ class JSONAPIBaseSerializer:
     
     def get_fields(self):
         return deepcopy(self._declared_fields)
+    
+    def bind(self, field_name, parent):
+        self.field_name = field_name
+        self.parent = parent
     
     def set_value(self, dictionary, keys, value):
         """
