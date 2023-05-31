@@ -72,6 +72,8 @@ class ListField(serializers.ListField):
 
 # TODO: write JSONAPI urls
 # TODO: test of types and length validation
+# TODO: change __class__.__name__ in to_internal_value to class name
+# TODO: make get_field_info in relations serializer asynchronous
 class JSONAPIBaseSerializer:
     _creation_counter = 0
     source = None
