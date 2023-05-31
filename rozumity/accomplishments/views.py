@@ -40,13 +40,16 @@ class TestViewSet(ViewSet):
         return response
     
     async def create(self, request):
-        data = request.data
         serializer_full = TestSerializer(
-            data=data, many=False, context={'request': request}
+            data=request.data, many=False, context={'request': request}
         )
-        serializer_full.is_valid()
-        response_data = serializer_full.validated_data
-        return Response(data=response_data, status=404)
+        if await serializer_full.is_valid():
+            response_data = await serializer_full.data
+            status = 200
+        else:
+            response_data = await serializer_full.errors
+            status = 403
+        return Response(data=response_data, status=status)
 
 
 # TODO: retrieve

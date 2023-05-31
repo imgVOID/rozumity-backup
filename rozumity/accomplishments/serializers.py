@@ -19,5 +19,5 @@ class TestSerializer(JSONAPISerializer):
         title = serializers.CharField(validators=[ValidateFieldType(str)])
     
     class Relationships(JSONAPISerializer.Relationships):
-        city = JSONAPISerializer.Type()
-        country = ListField(child=JSONAPISerializer.Type())
+        city = JSONAPISerializer.Type(required=False)
+        country = ListField(child=JSONAPISerializer.Type(), required=False)
