@@ -72,6 +72,7 @@ class ListField(serializers.ListField):
             self.validators.append(MinLengthValidator(self.min_length, message=message))
 
 
+# TODO: MAKE NOT REQUIRED FIELDS CHECK TO BE PASSED!!!
 # TODO: write JSONAPI urls
 # TODO: test of types and length validation
 # TODO: check if prefetch_related works with async queryset
@@ -394,7 +395,7 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
                 except DjangoValidationError as exc:
                     errors[name] = get_error_detail(exc)
                 except AttributeError as exc:
-                    errors[f'relationships.{name}.data'] = ValidationError(
+                    errors[f'relationships.{name}'] = ValidationError(
                         'This field may not be null.'
                     ).detail
                 except SkipField:
@@ -502,9 +503,13 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
         for name, field in fields.items():
             if name == 'included':
                 continue
-            if isinstance(field, JSONAPIBaseSerializer):
-                field = field.__class__(data={} if value is None else value)
             value = await self.get_value(name, data)
+            if isinstance(field, JSONAPIBaseSerializer):
+                field = field.__class__(
+                    data={} if value is None else value
+                )
+            else:
+                pass
             try:
                 validated_value = field.run_validation(value)
                 try:
