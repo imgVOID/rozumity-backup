@@ -214,7 +214,6 @@ class JSONAPIBaseSerializer:
             try:
                 self._validated_data = await self.to_internal_value(self.initial_data)
             except ValidationError as exc:
-                print(exc.detail)
                 self._validated_data = {}
                 self._errors = exc.detail
             else:
@@ -238,7 +237,6 @@ class JSONAPIBaseSerializer:
         errors = {}
         fields = self.fields
         for name, field in fields.items():
-            print(name, data, self)
             value = await self.get_value(name, data)
             try:
                 validated_value = field.run_validation(value)
@@ -247,6 +245,10 @@ class JSONAPIBaseSerializer:
                 except TypeError:
                     pass
             except ValidationError as exc:
+                errors[f'attributes.{name}'] = ValidationError(
+                    'This field may not be null.'
+                ).detail
+            except AttributeError as exc:
                 errors[f'attributes.{name}'] = ValidationError(
                     'This field may not be null.'
                 ).detail
@@ -378,13 +380,8 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
         fields = self.fields
         for name, field in fields.items():
             value = await self.get_value(name, data)
-            if not value and field.required:
-                errors[f'relationships.{name}.data'] = ValidationError(
-                    'This field may not be null.'
-                ).detail
-                continue
-            field = field.child if hasattr(field, 'child') else field
             value = [value] if type(value) != list else value
+            field = field.child if hasattr(field, 'child') else field
             for obj in value:
                 try:
                     validated_value = field.__class__(data=obj).run_validation(obj)
@@ -396,6 +393,10 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
                     errors[name] = exc.detail
                 except DjangoValidationError as exc:
                     errors[name] = get_error_detail(exc)
+                except AttributeError as exc:
+                    errors[f'relationships.{name}.data'] = ValidationError(
+                        'This field may not be null.'
+                    ).detail
                 except SkipField:
                     pass
                 else:
@@ -501,13 +502,9 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
         for name, field in fields.items():
             if name == 'included':
                 continue
-            value = await self.get_value(name, data)
             if isinstance(field, JSONAPIBaseSerializer):
-                field = field.__class__(
-                    data={} if value is None else value
-                )
-            else:
-                pass
+                field = field.__class__(data={} if value is None else value)
+            value = await self.get_value(name, data)
             try:
                 validated_value = field.run_validation(value)
                 try:
