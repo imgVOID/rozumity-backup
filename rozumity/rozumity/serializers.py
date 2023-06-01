@@ -395,7 +395,7 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
                 except DjangoValidationError as exc:
                     errors[name] = get_error_detail(exc)
                 except AttributeError as exc:
-                    errors[f'relationships.{name}'] = ValidationError(
+                    errors[f'relationships.{name}.data'] = ValidationError(
                         'This field may not be null.'
                     ).detail
                 except SkipField:
