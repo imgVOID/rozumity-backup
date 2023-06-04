@@ -28,7 +28,7 @@ class LimitOffsetAsyncPagination:
         """
         Encode unicode symbols in url parameters
         """
-        return url.replace('%5B', '[').replace('%5D', ']')
+        return url.replace('%5B', '[').replace('%5D', ']').replace('?page[offset]=0', '')
     
     @staticmethod
     async def _positive_int(integer_string, strict=False, cutoff=None):
@@ -50,12 +50,8 @@ class LimitOffsetAsyncPagination:
         self.limit = await self.get_limit(request)
         if self.limit is None:
             return None
-
         self.count = await self.get_count(queryset)
         self.offset = await self.get_offset(request)
-        if self.count > self.limit and self.template is not None:
-            self.display_page_controls = True
-
         if self.count == 0 or self.offset > self.count:
             return []
         return list(queryset[self.offset:self.offset + self.limit])
@@ -68,11 +64,13 @@ class LimitOffsetAsyncPagination:
         }
         next = await self.get_next_link()
         prev = await self.get_previous_link()
+        last = await self.get_last_link()
         if next:
             links['next'] = next
         if prev:
             links['prev'] = prev
-        links['last'] = await self.get_last_link()
+        if last != links['self']:
+            links['last'] = last
         links = {'links': links}
         try:
             links = {**links, **data}

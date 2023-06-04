@@ -7,6 +7,7 @@ from django.core.validators import MaxLengthValidator, MinLengthValidator
 from django.apps import apps
 from rest_framework import serializers
 from django.utils.functional import cached_property
+from rest_framework.reverse import reverse as reverse_sync
 from rest_framework.settings import api_settings
 from rest_framework.utils.model_meta import get_field_info
 from rest_framework.exceptions import ValidationError
@@ -19,6 +20,7 @@ from rest_framework.fields import (JSONField, CharField, IntegerField,
 from asgiref.sync import sync_to_async
 
 get_field_info = sync_to_async(get_field_info)
+reverse = sync_to_async(reverse_sync)
 
 
 class NotSelectedForeignKey(ImproperlyConfigured):
@@ -72,9 +74,7 @@ class ListField(serializers.ListField):
             self.validators.append(MinLengthValidator(self.min_length, message=message))
 
 
-# TODO: MAKE NOT REQUIRED FIELDS CHECK TO BE PASSED!!!
-# TODO: write JSONAPI urls
-# TODO: test of types and length validation
+# TODO: create length validation
 # TODO: check if prefetch_related works with async queryset
 # TODO: make to_internal_value base method to reuse it in all the serializers
 class JSONAPIBaseSerializer:
@@ -86,12 +86,16 @@ class JSONAPIBaseSerializer:
         self.instance = instance
         if data is not None:
             self.initial_data = data
-        self.initial = data
+        self.initial = {}
         self.required = kwargs.pop('required', True)
         self.partial = kwargs.pop('partial', False)
         self._context = kwargs.pop('context', {})
         if self._context.get('request'):
-            self.full_path = self._context.get('request').get_full_path()
+            self.full_path = self._context.get('request').build_absolute_uri()
+            self.full_path = self.full_path.split('?')[0]
+            if self.full_path[-2].isnumeric():
+                self.full_path = '/'.join(self.full_path.split('/')[:-2]) + '/'
+        self._view_name = kwargs.pop('view_name', None)
         kwargs.pop('many', None)
         super().__init__(**kwargs)
 
@@ -180,11 +184,10 @@ class JSONAPIBaseSerializer:
                 errors.update(val)
             else:
                 errors[key] = val
-        errors = {"jsonapi": { "version": "1.1" }, 'errors': [{
+        return {"jsonapi": { "version": "1.1" }, 'errors': [{
             'code': 403, 'source': {'pointer': self.full_path}, 
-            'title': f"The '{key}' field caused an exception: {val.pop().lower()}"
+            'detail': f"The JSON field '{key}' caused an exception: {val.pop().lower()}"
         } for key, val in errors.items()]}
-        return errors
     
     async def get_initial(self):
         if callable(self.initial):
@@ -227,12 +230,6 @@ class JSONAPIBaseSerializer:
         await self.is_valid(raise_exception=True)
         return await self.validated_data
     
-    async def _raise_if_required_empty(self, name, field, value):
-        if not value and field.required:
-            raise ValidationError(
-                f"The '{name}' attribute field is required."
-            )
-
     async def to_internal_value(self, data):
         ret = {}
         errors = {}
@@ -246,13 +243,20 @@ class JSONAPIBaseSerializer:
                 except TypeError:
                     pass
             except ValidationError as exc:
-                errors[f'attributes.{name}'] = ValidationError(
-                    'This field may not be null.'
-                ).detail
+                detail = exc.detail
+                if not field.required and not value:
+                    pass
+                else:
+                    errors[
+                        f'attributes.{name}' if 
+                        self.__class__.__name__.lower() == 'attributes' 
+                        else name
+                    ] = detail
             except AttributeError as exc:
-                errors[f'attributes.{name}'] = ValidationError(
-                    'This field may not be null.'
-                ).detail
+                if field.required:
+                    errors[f'attributes.{name}'] = ValidationError(
+                        'This field may not be null.'
+                    ).detail
             except DjangoValidationError as exc:
                 errors[name] = get_error_detail(exc)
             except SkipField:
@@ -287,148 +291,23 @@ class SerializerMetaclass(type):
             attrs['attributes'] = attributes()
         if relationships:
             attrs['relationships'] = relationships()
-        
         fields = [(field_name, attrs.pop(field_name))
                   for field_name, obj in list(attrs.items())
                   if isinstance(obj, Field) or isinstance(obj, JSONAPIBaseSerializer)]
-
         known = set(attrs)
-
         def visit(name):
             known.add(name)
             return name
-
         base_fields = [
             (visit(name), f)
             for base in bases if hasattr(base, '_declared_fields')
             for name, f in base._declared_fields.items() if name not in known
         ]
-
         return dict(base_fields + fields)
 
     def __new__(cls, name, bases, attrs):
         attrs['_declared_fields'] = cls._get_declared_fields(bases, attrs)
         return super().__new__(cls, name, bases, attrs)
-
-
-class JSONAPITypeIdSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
-    type = CharField(validators=[ValidateFieldType(str)])
-    id = IntegerField(validators=[ValidateFieldType(int)])
-    
-    async def to_representation(self, instance):
-        fields = self.fields
-        instance_map = {'type': instance.__class__.__name__.lower(), 
-                        'id': instance.id}
-        return {name: await self.get_value(name, instance_map) for name in fields.keys()}
-
-
-class JSONAPIAttributesSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
-    async def to_representation(self, instance):
-        fields = self.fields
-        instance_map = {key: getattr(instance, key) for key in fields.keys()}
-        return {name: await self.get_value(name, instance_map) for name in fields.keys()}
-
-
-class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
-    def __init__(self, instance=None, data=None, **kwargs):
-        if kwargs.pop('included', False):
-            self._included = []
-        else:
-            self._included = None
-        super().__init__(instance, data, **kwargs)
-    
-    @property
-    async def included(self):
-        if self._included is not None and not self._included:
-            await self.to_representation(self.instance)
-        return self._included
-    
-    async def _add_value(self, dictionary, keys, value):
-        for key in keys:
-            if not dictionary.get(key):
-                dictionary[key] = {'data': []}
-            dictionary[key]['data'].append(value)
-    
-    async def _serialize_included(self, objects_list):
-        for obj in objects_list:
-            fields = await get_field_info(obj)
-            data_included = {'type': obj.__class__.__name__.lower(), 'id': obj.id}
-            for attribute in fields.fields.keys():
-                if not data_included.get('attributes'):
-                    data_included['attributes'] = {}
-                data_included['attributes'][attribute] = getattr(obj, attribute)
-            for relationship in fields.forward_relations.keys():
-                if not data_included.get('relationships'):
-                    data_included['relationships'] = {}
-                objects_list = getattr(obj, relationship)
-                try:
-                    objects_list = objects_list.all()
-                except AttributeError:
-                    objects_list = [objects_list]
-                if not objects_list:
-                    continue
-                objects_list = [await JSONAPITypeIdSerializer(inner_obj).data 
-                                for inner_obj in objects_list]
-                objects_list = [val for val in objects_list]
-                data_included['relationships'][relationship] = {
-                    'data': objects_list if len(objects_list) > 1 else objects_list.pop()
-                }
-            self._included.append(data_included)
-    
-    async def to_internal_value(self, data):
-        ret = {}
-        errors = {}
-        fields = self.fields
-        for name, field in fields.items():
-            value = await self.get_value(name, data)
-            value = [value] if type(value) != list else value
-            field = field.child if hasattr(field, 'child') else field
-            for obj in value:
-                try:
-                    validated_value = field.__class__(data=obj).run_validation(obj)
-                    try:
-                        validated_value = await validated_value
-                    except TypeError:
-                        pass
-                except ValidationError as exc:
-                    errors[name] = exc.detail
-                except DjangoValidationError as exc:
-                    errors[name] = get_error_detail(exc)
-                except AttributeError as exc:
-                    errors[f'relationships.{name}.data'] = ValidationError(
-                        'This field may not be null.'
-                    ).detail
-                except SkipField:
-                    pass
-                else:
-                    if len(value) == 1:
-                        await self.set_value(
-                            ret, {}, {name: {'data': validated_value}}
-                        )
-                    else:
-                        await self._add_value(ret, [name], validated_value)
-        if errors:
-            raise ValidationError(errors)
-        else:
-            return ret
-    
-    async def to_representation(self, instance):
-        fields = self.fields
-        data = {name: await self.get_value(
-            name, {key: getattr(instance, key) for key in fields.keys()}
-        ) for name in self.fields.keys()}
-        for key, val in data.items():
-            if hasattr(val, 'all'):
-                objects_list = []
-                async for e in val.all():
-                    objects_list.append(e)
-            else:
-                objects_list = [val]
-            value = [await JSONAPITypeIdSerializer(obj).data for obj in objects_list]
-            data[key] = {'data': value.pop() if len(value) == 1 else value}
-            if self._included is not None:
-                await self._serialize_included(objects_list)
-        return data
 
 
 class JSONAPIManySerializer(JSONAPIBaseSerializer):
@@ -450,32 +329,147 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
         data = {'data': []}
         included = {}
         for obj in self.iterable:
-            obj_data = await self.child.__class__(obj).data
-            included_obj_data = obj_data.pop('included', None)
+            obj_data = await self.child.__class__(obj, context=self._context).data
+            included_obj_data = obj_data.pop('included', [])
             if included_obj_data is not None:
-                included.update({f'{obj["type"]}_{obj["id"]}': dict(obj) for obj 
-                                in await included_obj_data})
+                included.update({
+                    f'{obj["type"]}_{obj["id"]}': dict(obj) 
+                    for obj in included_obj_data
+                })
             data['data'].append(*obj_data.pop('data'))
         if included:
-            data['included'] = sorted(
-                list(included.values()), 
-                key=lambda x: (x['type'], x['id'])
-            )
+            data['included'] = list(included.values())
+            # Sort included
+            # data['included'] = sorted(
+            #    list(included.values()), 
+            #    key=lambda x: (x['type'], x['id'])
+            #)
         return data
+
+
+class JSONAPITypeIdSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
+    type = CharField(validators=[ValidateFieldType(str)])
+    id = IntegerField(validators=[ValidateFieldType(int)])
     
-    @property
-    async def data(self):
-        if hasattr(self, 'initial_data') and not hasattr(self, '_validated_data'):
-            raise AssertionError('you must call `.is_valid()` before attempting '
-                                 'to access the serialized `.data` representation.\n')
-        if not hasattr(self, '_data'):
-            if self.instance is not None and not getattr(self, '_errors', None):
-                self._data = await self.to_representation(self.instance)
-            elif hasattr(self, '_validated_data') and not getattr(self, '_errors', None):
-                self._data = await self.validated_data
+    async def to_representation(self, instance):
+        fields = self.fields
+        instance_map = {'type': instance.__class__.__name__.lower(), 
+                        'id': instance.id}
+        return {name: await self.get_value(name, instance_map) 
+                for name in fields.keys()}
+
+
+class JSONAPIAttributesSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
+    async def to_representation(self, instance):
+        fields = self.fields
+        instance_map = {key: getattr(instance, key) for key in fields.keys()}
+        return {name: await self.get_value(name, instance_map) 
+                for name in fields.keys()}
+
+
+class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
+    async def _add_value(self, dictionary, keys, value):
+        for key in keys:
+            if not dictionary.get(key):
+                dictionary[key] = {'data': []}
+            dictionary[key]['data'].append(value)
+    
+    async def to_internal_value(self, data):
+        ret = {}
+        errors = {}
+        fields = self.fields
+        for name, field in fields.items():
+            value = await self.get_value(name, data)
+            value = [value] if type(value) != list else value
+            if hasattr(field, 'child'):
+                field.child.required, field = field.required, field.child
+            for obj in value:
+                try:
+                    validated_value = field.__class__(data=obj).run_validation(obj)
+                    try:
+                        validated_value = await validated_value
+                    except TypeError:
+                        pass
+                except ValidationError as exc:
+                    detail = exc.detail
+                    if type(detail) == dict:
+                        for key, val in detail.items():
+                            errors[f'relationships.{name}.data.{key}'] = val
+                    else:
+                        errors[name] = detail
+                except DjangoValidationError as exc:
+                    errors[name] = get_error_detail(exc)
+                except AttributeError as exc:
+                    if field.required:
+                        errors[f'relationships.{name}.data'] = ValidationError(
+                            'This field may not be null.'
+                        ).detail
+                except SkipField:
+                    pass
+                else:
+                    if len(value) == 1:
+                        await self.set_value(
+                            ret, {}, {name: {'data': validated_value}}
+                        )
+                    else:
+                        await self._add_value(ret, [name], validated_value)
+        if errors:
+            raise ValidationError(errors)
+        else:
+            return ret
+    
+    async def to_representation(self, instance):
+        fields = self.fields
+        data = {name: await self.get_value(
+            name, {key: getattr(instance, key) for key in fields.keys()}
+        ) for name in self.fields.keys()}
+        value, included = [], []
+        for key, val in data.items():
+            if hasattr(val, 'all'):
+                field, field._view_name = fields[key].child, fields[key].child._view_name
+                objects_list = []
+                async for e in val.all():
+                    objects_list.append(e)
             else:
-                self._data = self.get_initial()
-        return ReturnDict(self._data, serializer=self)
+                objects_list = [val]
+            field_info = await get_field_info(objects_list[0])
+            for obj in objects_list:
+                data_included = {'type': obj.__class__.__name__.lower(), 'id': obj.id}
+                data_new = data_included.copy()
+                value.append(data_new)
+                for attribute in field_info.fields.keys():
+                    if not data_included.get('attributes'):
+                        data_included['attributes'] = {}
+                    data_included['attributes'][attribute] = getattr(obj, attribute)
+                for relationship in field_info.forward_relations.keys():
+                    if not data_included.get('relationships'):
+                        data_included['relationships'] = {}
+                    objects_list = getattr(obj, relationship)
+                    try:
+                        objects_list = objects_list.all()
+                    except AttributeError:
+                        objects_list = [objects_list]
+                    if not objects_list:
+                        continue
+                    objects_list = [await JSONAPITypeIdSerializer(inner_obj).data 
+                                    for inner_obj in objects_list]
+                    data_included['relationships'][relationship] = {
+                        'data': objects_list if len(objects_list) > 1 else objects_list.pop(),
+                    }
+                field = fields[key]
+                if hasattr(field, 'child'):
+                    field, field._view_name = field.child, field.child._view_name
+                if field._view_name:
+                    data_included['links'] = {
+                        'self': await reverse(
+                            field._view_name, [data_included['id']], 
+                            request=self._context.get('request'))
+                        }
+                included.append(data_included)
+            
+            data[key] = {'data': value.pop() if len(value) == 1 else value}
+        data['included'] = included
+        return data
 
 
 class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
@@ -534,7 +528,9 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
         obj_map = {**await self.Type(instance).data}
         serializer_map = {
             'attributes': fields['attributes'].__class__(instance),
-            'relationships': fields['relationships'].__class__(instance, included=True)
+            'relationships': fields['relationships'].__class__(
+                instance, context=self._context
+            )
         }
         for key, val in serializer_map.items():
             if len(val._declared_fields):
@@ -544,8 +540,19 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
                     raise NotSelectedForeignKey from e
             else:
                 obj_map[key] = {}
-        obj_map['included'] = serializer_map['relationships'].included
-        return {'data': [{
-            **{name: await self.get_value(name, obj_map) for name in 
-                fields.keys() if name in obj_map and name != 'included'}
-            }], 'included': await self.get_value('included', obj_map)}
+        data = {name: await self.get_value(name, obj_map) for name in 
+               fields.keys() if name in obj_map and name != 'included'}
+        included = data['relationships'].pop('included', [])
+        link_self = self.full_path + str(obj_map.get("id"))
+        for name, rel_data in data['relationships'].items():
+            if type(rel_data['data']) == list:
+                rel_data = rel_data['data'][0]
+            else:
+                rel_data = rel_data['data']
+            data['relationships'][name]['links'] = {
+                'self': f"{link_self}/relationships/{name}/",
+                'related': f"{link_self}/{name}/"
+            }
+        return {'data': [{**data, 'links': {'self': link_self}}], 
+                'links': {'self': link_self},
+                'included': included}
