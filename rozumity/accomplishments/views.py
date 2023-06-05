@@ -34,6 +34,9 @@ class TestViewSet(ViewSet):
                         queryset=objects, request=request
                     ), many=True, context={'request': request}
                 ).data
+            print(await TestSerializer(objects, many=True)['attributes'])
+            async for test in TestSerializer(objects, many=True):
+                print(test)
             response = await self.pagination_class.get_paginated_response(data)
         else:
             response = Response(status=404)
