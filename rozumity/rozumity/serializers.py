@@ -1,5 +1,6 @@
-from asyncio import ensure_future, iscoroutinefunction
+import re
 import inspect
+from asyncio import ensure_future, iscoroutinefunction
 from copy import deepcopy
 from functools import wraps
 from django.db.models.manager import BaseManager
@@ -9,7 +10,6 @@ from django.core.validators import MaxLengthValidator, MinLengthValidator
 from rest_framework import serializers
 from rest_framework.reverse import reverse
 from rest_framework.exceptions import ValidationError
-from rest_framework.utils.representation import serializer_repr, field_repr, list_repr
 from rest_framework.utils.model_meta import get_field_info
 from rest_framework.utils.serializer_helpers import (
     BindingDict, BoundField, JSONBoundField, NestedBoundField, ReturnDict
@@ -22,29 +22,6 @@ from asgiref.sync import sync_to_async
 get_field_info = sync_to_async(get_field_info)
 reverse = sync_to_async(reverse)
 deepcopy_async = sync_to_async(deepcopy)
-
-
-def serializer_repr(serializer, indent, force_many=None):
-    ret = field_repr(serializer, force_many) + ':'
-    indent_str = '    ' * indent
-
-    if force_many:
-        fields = force_many.fields
-    else:
-        fields = serializer.fields
-
-    for field_name, field in fields.items():
-        ret += '\n' + indent_str + field_name + ' = '
-        if hasattr(field, 'fields'):
-            ret += serializer_repr(field, indent + 1)
-        elif hasattr(field, 'child'):
-            ret += list_repr(field, indent + 1)
-        elif hasattr(field, 'child_relation'):
-            ret += field_repr(field.child_relation, force_many=field.child_relation)
-        else:
-            ret += field_repr(field)
-
-    return ret
 
 
 class cached_property(object):
@@ -73,6 +50,82 @@ class cached_property(object):
             obj.__dict__[self.func.__name__] = future
             return await future
         return wrapper()
+
+
+class JSONAPISerializerRepr:
+    def __init__(self, serializer, indent, force_many=None):
+        self._serializer = serializer
+        self._indent = indent
+        self._force_many = force_many
+    
+    @staticmethod
+    def _has_declared_fields(field):
+        return hasattr(field, '_declared_fields')
+    
+    @staticmethod
+    def _has_child(field):
+        return hasattr(field, 'child')
+    
+    @staticmethod
+    def _smart_repr(value):
+        value = repr(value)
+        if value.startswith("u'") and value.endswith("'"):
+            return value[1:]
+        return re.sub(' at 0x[0-9A-Fa-f]{4,32}>', '>', value)
+    
+    @classmethod
+    def _field_repr(cls, field, force_many=False):
+        kwargs = field._kwargs
+        if force_many:
+            kwargs = kwargs.copy()
+            kwargs['many'] = True
+            kwargs.pop('child', None)
+        arg_string = ', '.join([cls._smart_repr(val) for val in field._args])
+        kwarg_string = ', '.join([
+            '%s=%s' % (key, cls._smart_repr(val))
+            for key, val in sorted(kwargs.items())
+        ])
+        if arg_string and kwarg_string:
+            arg_string += ', '
+        if force_many:
+            class_name = force_many.__class__.__name__
+        else:
+            class_name = field.__class__.__name__
+        return "%s(%s%s)" % (class_name, arg_string, kwarg_string)
+    
+    #TODO: test case when list field contains numbers not serializers
+    def __repr__(self):
+        serializer, indent = self._serializer, self._indent
+        ret = self._field_repr(serializer, self._force_many) + ':'
+        indent_str = '    ' * indent
+        if self._force_many:
+            fields = self._force_many._declared_fields
+        else:
+            fields = serializer._declared_fields
+        for field_name, field in fields.items():
+            ret += '\n' + indent_str + field_name + ' = '
+            required_string = '' if field.required else f'required={field.required}'
+            if self._has_declared_fields(field):
+                ret += self.__class__(field, indent + 1).__repr__().replace(
+                    '()', f"({required_string})"
+                )
+            elif self._has_child(field):
+                child = field.child
+                if self._has_declared_fields(child):
+                    ret += '{}({}child={}'.format(
+                        field.__class__.__name__, required_string + ', ',
+                        self.__class__(child, indent + 1).__repr__().replace('()', '())'),
+                    )
+                else:
+                    ret += self._field_repr(child)
+            elif hasattr(field, 'child_relation'):
+                ret += self._field_repr(field.child_relation, force_many=field.child_relation)
+            else:
+                ret += self._field_repr(field)
+        if getattr(serializer, 'validators', None):
+            ret += '\n' + indent_str + 'class Meta:'
+            ret += '\n' + indent_str + '    validators = ' + self._smart_repr(serializer.validators)
+        return ret
 
 
 class NotSelectedForeignKey(ImproperlyConfigured):
@@ -119,10 +172,10 @@ class ListField(serializers.ListField):
             self.validators.append(MinLengthValidator(self.min_length, message=message))
 
 
-# TODO: create length validation
+# TODO: create length validation, test type validation, probably remove type validation
+# TODO: create validation methods for serializers and fields
 # TODO: check if prefetch_related works with async queryset
 # TODO: make to_internal_value base method to reuse it in all the serializers
-# TODO: fix iterator fields position, move included to the bottom of a list
 class JSONAPIBaseSerializer:
     _creation_counter = 0
     source = None
@@ -140,12 +193,14 @@ class JSONAPIBaseSerializer:
         self.required = kwargs.pop('required', True)
         self.partial = kwargs.pop('partial', False)
         self._context = kwargs.pop('context', {})
+        # TODO: write get_path method
         if self._context.get('request'):
             self.full_path = self._context.get('request').build_absolute_uri()
             self.full_path = self.full_path.split('?')[0]
             if self.full_path[-2].isnumeric():
                 self.full_path = '/'.join(self.full_path.split('/')[:-2]) + '/'
         self._view_name = kwargs.pop('view_name', None)
+        self._repr_template = JSONAPISerializerRepr(self, indent=1)
         kwargs.pop('many', None)
         super().__init__(**kwargs)
 
@@ -153,6 +208,9 @@ class JSONAPIBaseSerializer:
         if kwargs.pop('many', False):
             return cls.many_init(*args, **kwargs)
         return super().__new__(cls)
+
+    def __repr__(self):
+        return str(self._repr_template)
 
     # Allow type checkers to make serializers generic.
     def __class_getitem__(cls, *args, **kwargs):
@@ -183,8 +241,9 @@ class JSONAPIBaseSerializer:
         elif isinstance(field, JSONAPIBaseSerializer):
             field = field.__class__(self.instance)
             data = await field.data
-            if 'included' in data:
-                del data['included']
+            data = {
+                key: val for key, val in data.items() if key != 'included'
+            }
             field.initial_data = data
             await field.is_valid()
             error = await field.errors
@@ -372,20 +431,24 @@ class JSONAPIBaseSerializer:
 
 
 class SerializerMetaclass(type):
+    fields = ('Attributes', 'Relationships', 'Included')
+    
     @classmethod
     def _get_declared_fields(cls, bases, attrs):
         obj_info = attrs.get('Type', None)
-        attributes = attrs.get('Attributes', None)
-        relationships = attrs.get('Relationships', None)
         if issubclass(obj_info.__class__, cls):
             attrs.update(obj_info._declared_fields)
-        if attributes:
-            attrs['attributes'] = attributes()
-        if relationships:
-            attrs['relationships'] = relationships()
+        fields = {name.lower(): attrs.get(name, None) for name in cls.fields}
+        fields = {name: field for name, field in fields.items() if field is not None}
+        for name, attr in fields.items():
+            if name != 'included':
+                attrs[name] = attr()
+            else:
+                attrs[name] = attr(required=False)
         fields = [(field_name, attrs.pop(field_name))
                   for field_name, obj in list(attrs.items())
-                  if isinstance(obj, Field) or isinstance(obj, JSONAPIBaseSerializer)]
+                  if isinstance(obj, Field) 
+                  or isinstance(obj, JSONAPIBaseSerializer)]
         known = set(attrs)
         def visit(name):
             known.add(name)
@@ -414,14 +477,16 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
         assert self.child is not None, '`child` is a required argument.'
         super().__init__(*args, **kwargs)
         self.child.bind(field_name='', parent=self)
-    
-    async def __getitem__(self, key):
-        iterable = self.instance.all() if isinstance(self.instance, BaseManager) else self.instance
-        fields = []
-        for obj in iterable:
-            field = self.child.__class__(obj)
-            fields.append(await field[key])
-        return fields
+        if self.child._repr_template:
+            self._repr_template = self.child._repr_template.__class__(
+                self, indent=1, force_many=self.child
+            )
+
+    def __repr__(self):
+        if hasattr(self, '_repr_template'):
+            return str(self._repr_template)
+        else:
+            return object.__repr__()
     
     def __aiter__(self):
         self.iter_count = 0
@@ -436,6 +501,14 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
         else:
             self.iter_count += 1
             return await self[key]
+    
+    async def __getitem__(self, key):
+        iterable = self.instance.all() if isinstance(self.instance, BaseManager) else self.instance
+        fields = []
+        for obj in iterable:
+            field = self.child.__class__(obj)
+            fields.append(await field[key])
+        return fields
     
     async def to_representation(self, data):
         self.iterable = await sync_to_async(data.all)() if isinstance(data, BaseManager) else data
@@ -587,7 +660,6 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
 
 
 class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
-    included = JSONField()
     
     class Type(JSONAPITypeIdSerializer):
         pass
@@ -596,6 +668,9 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
         pass
     
     class Relationships(JSONAPIRelationsSerializer):
+        pass
+    
+    class Included(JSONField):
         pass
     
     class Meta:

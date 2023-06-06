@@ -34,10 +34,15 @@ class TestViewSet(ViewSet):
                         queryset=objects, request=request
                     ), many=True, context={'request': request}
                 ).data
-            print(await TestSerializer(objects, many=True)['attributes'])
-            async for test in TestSerializer(objects, many=True):
-                print(test)
             response = await self.pagination_class.get_paginated_response(data)
+            # TODO: write unit tests
+            serializer_field = await TestSerializer(objects, many=True)['attributes']
+            serializer_obj_representation = TestSerializer(objects, many=True).__repr__()
+            async for test in TestSerializer(objects, many=True):
+                assert type(test) == list and len(test) > 1
+            assert type(serializer_field) == list and len(serializer_field) > 1
+            assert type(serializer_obj_representation) == str and len(serializer_obj_representation) > 10
+            # print(serializer_obj_representation)
         else:
             response = Response(status=404)
         return response
