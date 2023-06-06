@@ -176,6 +176,7 @@ class ListField(serializers.ListField):
 # TODO: create validation methods for serializers and fields
 # TODO: check if prefetch_related works with async queryset
 # TODO: make to_internal_value base method to reuse it in all the serializers
+# TODO: write get_path method and create a possibility to pop absolute uri from the conxtext directly
 class JSONAPIBaseSerializer:
     _creation_counter = 0
     source = None
@@ -193,7 +194,6 @@ class JSONAPIBaseSerializer:
         self.required = kwargs.pop('required', True)
         self.partial = kwargs.pop('partial', False)
         self._context = kwargs.pop('context', {})
-        # TODO: write get_path method
         if self._context.get('request'):
             self.full_path = self._context.get('request').build_absolute_uri()
             self.full_path = self.full_path.split('?')[0]
