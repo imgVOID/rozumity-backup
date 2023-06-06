@@ -53,7 +53,7 @@ class cached_property(object):
 
 
 class JSONAPISerializerRepr:
-    def __init__(self, serializer, indent, force_many=None):
+    def __init__(self, serializer, indent=1, force_many=None):
         self._serializer = serializer
         self._indent = indent
         self._force_many = force_many
@@ -200,7 +200,6 @@ class JSONAPIBaseSerializer:
             if self.full_path[-2].isnumeric():
                 self.full_path = '/'.join(self.full_path.split('/')[:-2]) + '/'
         self._view_name = kwargs.pop('view_name', None)
-        self._repr_template = JSONAPISerializerRepr(self, indent=1)
         kwargs.pop('many', None)
         super().__init__(**kwargs)
 
@@ -210,7 +209,7 @@ class JSONAPIBaseSerializer:
         return super().__new__(cls)
 
     def __repr__(self):
-        return str(self._repr_template)
+        return str(JSONAPISerializerRepr(self))
 
     # Allow type checkers to make serializers generic.
     def __class_getitem__(cls, *args, **kwargs):
@@ -477,16 +476,9 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
         assert self.child is not None, '`child` is a required argument.'
         super().__init__(*args, **kwargs)
         self.child.bind(field_name='', parent=self)
-        if self.child._repr_template:
-            self._repr_template = self.child._repr_template.__class__(
-                self, indent=1, force_many=self.child
-            )
 
     def __repr__(self):
-        if hasattr(self, '_repr_template'):
-            return str(self._repr_template)
-        else:
-            return object.__repr__()
+        return str(JSONAPISerializerRepr(self, force_many=self.child))
     
     def __aiter__(self):
         self.iter_count = 0

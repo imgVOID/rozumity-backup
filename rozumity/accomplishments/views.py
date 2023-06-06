@@ -19,6 +19,7 @@ class TestViewSet(ViewSet):
     authentication_classes = [SessionAuthentication]
     pagination_class = LimitOffsetAsyncPagination
     
+    # TODO: rewrite query and pagination so objects will not to be loaded above the limit
     async def list(self, request):
         objects = []
         async for university in Test.objects.prefetch_related('country').select_related(
@@ -30,9 +31,7 @@ class TestViewSet(ViewSet):
                 queryset=objects, request=request
             )
             data = await TestSerializer(
-                    await self.pagination_class.paginate_queryset(
-                        queryset=objects, request=request
-                    ), many=True, context={'request': request}
+                    objects, many=True, context={'request': request}
                 ).data
             response = await self.pagination_class.get_paginated_response(data)
             # TODO: write unit tests
