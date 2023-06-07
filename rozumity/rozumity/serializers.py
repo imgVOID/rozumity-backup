@@ -490,7 +490,9 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
         data = {'data': []}
         included = {}
         for obj in self.iterable:
-            obj_data = await self.child.__class__(obj, context=self._context).data
+            obj_data = await self.child.__class__(
+                obj, context={**self._context, 'many': True}
+            ).data
             included_obj_data = obj_data.pop('included', [])
             if included_obj_data is not None:
                 included.update({
@@ -500,6 +502,12 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
             data['data'].append(*obj_data.pop('data'))
         if included:
             data['included'] = list(included.values())
+            if self.child.source:
+                for obj_data in included.values():
+                    obj_data['links'] = {'self': await reverse(
+                        *obj_data['links'], 
+                        request=self._context.get('request')
+                    )}
             # Sort included
             # data['included'] = sorted(
             #    list(included.values()), 
@@ -586,7 +594,8 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
         data = {name: await self.get_value(
             name, {key: getattr(instance, key) for key in fields.keys()}
         ) for name in fields.keys()}
-        source = f'{self.source}{str(self._context.get("parent_id"))}'
+        source = self.source
+        source_id = f'{source}{str(self._context.get("parent_id"))}'
         value, included = [], []
         for key, val in data.items():
             if hasattr(val, 'all'):
@@ -624,19 +633,15 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
                 field = fields[key]
                 if hasattr(field, 'child'):
                     field, field._view_name = field.child, field.child._view_name
-                if field._view_name:
-                    data_included['links'] = {
-                        # TODO: remove await, await it only when it needed
-                        'self': await reverse(
-                            field._view_name, [data_included['id']], 
-                            request=self._context.get('request'))
-                        }
+                if field._view_name and source:
+                    data_included['links'] = [field._view_name, [data_included['id']]]
                 included.append(data_included)
             data[key] = {'data': value.pop() if len(value) == 1 else value}
-            if not self.source:
-                continue
-            data[key]['links'] = {'self': f"{source}/relationships/{key}/",
-                                  'related': f"{source}/{key}/"}
+            if source:
+                data[key]['links'] = {
+                    'self': f"{source_id}/relationships/{key}/",
+                    'related': f"{source_id}/{key}/"
+                }
         data['included'] = included
         return data
 
@@ -721,6 +726,11 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
         data = {name: await self.get_value(name, obj_map) for name in 
                fields.keys() if name in obj_map and name != 'included'}
         included = data['relationships'].pop('included', [])
+        if self.source and not self._context.get('many', None):
+            for data in included:
+                data['links']= {'self': await reverse(
+                    *data['links'], request=self._context.get('request')
+                )}
         return {
             'data': [{**data, 'links': {'self': source}}], 
             'links': {'self': source}, 'included': included
