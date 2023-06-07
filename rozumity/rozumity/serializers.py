@@ -586,6 +586,7 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
         data = {name: await self.get_value(
             name, {key: getattr(instance, key) for key in fields.keys()}
         ) for name in fields.keys()}
+        source = f'{self.source}{str(self._context.get("parent_id"))}'
         value, included = [], []
         for key, val in data.items():
             if hasattr(val, 'all'):
@@ -625,13 +626,17 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
                     field, field._view_name = field.child, field.child._view_name
                 if field._view_name:
                     data_included['links'] = {
+                        # TODO: remove await, await it only when it needed
                         'self': await reverse(
                             field._view_name, [data_included['id']], 
                             request=self._context.get('request'))
                         }
                 included.append(data_included)
-            
             data[key] = {'data': value.pop() if len(value) == 1 else value}
+            if not self.source:
+                continue
+            data[key]['links'] = {'self': f"{source}/relationships/{key}/",
+                                  'related': f"{source}/{key}/"}
         data['included'] = included
         return data
 
@@ -700,9 +705,11 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
         serializer_map = {
             'attributes': fields['attributes'].__class__(instance),
             'relationships': fields['relationships'].__class__(
-                instance, context=self._context
+                instance, context={**self._context, 'parent_id': obj_map['id']}
             )
         }
+        source = self.source
+        serializer_map['relationships'].source = source
         for key, val in serializer_map.items():
             if len(val._declared_fields):
                 try:
@@ -714,22 +721,10 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
         data = {name: await self.get_value(name, obj_map) for name in 
                fields.keys() if name in obj_map and name != 'included'}
         included = data['relationships'].pop('included', [])
-        source = self.source
-        if not source:
-            return {'data': [data], 'included': included}
-        source = source + str(obj_map.get("id"))
-        for name, rel_data in data['relationships'].items():
-            if type(rel_data['data']) == list:
-                rel_data = rel_data['data'][0]
-            else:
-                rel_data = rel_data['data']
-            data['relationships'][name]['links'] = {
-                'self': f"{source}/relationships/{name}/",
-                'related': f"{source}/{name}/"
-            }
-        return {'data': [{**data, 'links': {'self': source}}], 
-                'links': {'self': source},
-                'included': included}
+        return {
+            'data': [{**data, 'links': {'self': source}}], 
+            'links': {'self': source}, 'included': included
+        } if source else {'data': [data], 'included': included}
 
     @cached_property
     async def errors(self):
