@@ -176,13 +176,11 @@ class ListField(serializers.ListField):
 # TODO: create validation methods for serializers and fields
 # TODO: check if prefetch_related works with async queryset
 # TODO: make to_internal_value base method to reuse it in all the serializers
-# TODO: write get_path method and create a possibility to pop absolute uri from the conxtext directly
 class JSONAPIBaseSerializer:
     _creation_counter = 0
     source = None
     initial = None
     field_name = ''
-    full_path = ''
     
     def __init__(self, instance=None, data=None, **kwargs):
         self.instance = instance
@@ -194,11 +192,6 @@ class JSONAPIBaseSerializer:
         self.required = kwargs.pop('required', True)
         self.partial = kwargs.pop('partial', False)
         self._context = kwargs.pop('context', {})
-        if self._context.get('request'):
-            self.full_path = self._context.get('request').build_absolute_uri()
-            self.full_path = self.full_path.split('?')[0]
-            if self.full_path[-2].isnumeric():
-                self.full_path = '/'.join(self.full_path.split('/')[:-2]) + '/'
         self._view_name = kwargs.pop('view_name', None)
         kwargs.pop('many', None)
         super().__init__(**kwargs)
@@ -408,18 +401,7 @@ class JSONAPIBaseSerializer:
         if not hasattr(self, '_errors'):
             msg = 'You must call `.is_valid()` before accessing `.errors`.'
             raise AssertionError(msg)
-        errors = {}
-        for key, val in self._errors.items():
-            if type(val) == dict:
-                errors.update(val)
-            else:
-                errors[key] = val
-        if not errors:
-            return None
-        return {"jsonapi": { "version": "1.1" }, 'errors': [{
-            'code': 403, 'source': {'pointer': self.full_path}, 
-            'detail': f"The JSON field '{key}' caused an exception: {val.pop().lower()}"
-        } for key, val in errors.items()]}
+        return self._errors
     
     @property
     async def validated_data(self):
@@ -430,20 +412,22 @@ class JSONAPIBaseSerializer:
 
 
 class SerializerMetaclass(type):
-    fields = ('Attributes', 'Relationships', 'Included')
+    required_fields = {
+        'Attributes': True, 'Relationships': True, 'Included': False
+    }
     
     @classmethod
     def _get_declared_fields(cls, bases, attrs):
         obj_info = attrs.get('Type', None)
         if issubclass(obj_info.__class__, cls):
             attrs.update(obj_info._declared_fields)
-        fields = {name.lower(): attrs.get(name, None) for name in cls.fields}
-        fields = {name: field for name, field in fields.items() if field is not None}
-        for name, attr in fields.items():
-            if name != 'included':
-                attrs[name] = attr()
-            else:
-                attrs[name] = attr(required=False)
+        required_fields = cls.required_fields
+        fields = {name: attrs.get(name, None) for name in required_fields}
+        attrs.update({
+            name.lower(): field(required=required_fields[name])
+            for name, field in fields.items() 
+            if issubclass(field.__class__, cls)
+        })
         fields = [(field_name, attrs.pop(field_name))
                   for field_name, obj in list(attrs.items())
                   if isinstance(obj, Field) 
@@ -624,8 +608,9 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
                     if not data_included.get('relationships'):
                         data_included['relationships'] = {}
                     objects_list = getattr(obj, relationship)
+                    # TODO: to test an included relation's many to many
                     try:
-                        objects_list = objects_list.all()
+                        objects_list = await objects_list.all()
                     except AttributeError:
                         objects_list = [objects_list]
                     if not objects_list:
@@ -650,9 +635,8 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
         data['included'] = included
         return data
 
-
+# TODO: rewrite included reverse() to the to_representation() method, not to relationships serializer
 class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
-    
     class Type(JSONAPITypeIdSerializer):
         pass
     
@@ -668,8 +652,14 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
     class Meta:
         list_serializer_class = JSONAPIManySerializer
     
-    async def get_value(self, field_name, dictionary=None):
-        return dictionary.get(field_name, None)
+    def __init__(self, instance=None, data=None, **kwargs):
+        super().__init__(instance, data, **kwargs)
+        request = self._context.get('request')
+        if request:
+            self.source = request.build_absolute_uri()
+            self.source = self.source.split('?')[0]
+            if self.source[-2].isnumeric():
+                self.source = '/'.join(self.source.split('/')[:-2]) + '/'
     
     async def to_internal_value(self, data):
         ret = {}
@@ -724,16 +714,42 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
         data = {name: await self.get_value(name, obj_map) for name in 
                fields.keys() if name in obj_map and name != 'included'}
         included = data['relationships'].pop('included', [])
-        link_self = self.full_path + str(obj_map.get("id"))
+        source = self.source
+        if not source:
+            return {'data': [data], 'included': included}
+        source = source + str(obj_map.get("id"))
         for name, rel_data in data['relationships'].items():
             if type(rel_data['data']) == list:
                 rel_data = rel_data['data'][0]
             else:
                 rel_data = rel_data['data']
             data['relationships'][name]['links'] = {
-                'self': f"{link_self}/relationships/{name}/",
-                'related': f"{link_self}/{name}/"
+                'self': f"{source}/relationships/{name}/",
+                'related': f"{source}/{name}/"
             }
-        return {'data': [{**data, 'links': {'self': link_self}}], 
-                'links': {'self': link_self},
+        return {'data': [{**data, 'links': {'self': source}}], 
+                'links': {'self': source},
                 'included': included}
+
+    @cached_property
+    async def errors(self):
+        if not hasattr(self, '_errors'):
+            msg = 'You must call `.is_valid()` before accessing `.errors`.'
+            raise AssertionError(msg)
+        errors = {}
+        for key, val in self._errors.items():
+            if type(val) == dict:
+                errors.update(val)
+            else:
+                errors[key] = val
+        if not errors:
+            return None
+        error_details = []
+        for key, val in errors.items():
+            error_detail = {'code': 403}
+            if self.source:
+                error_detail['source'] = {'pointer': self.source}
+            error_detail['detail'] = f"The JSON field '{key}' caused an exception: {val.pop().lower()}"
+            error_details.append(error_detail)
+        return {"jsonapi": { "version": "1.1" }, 'errors': error_details}
+    
