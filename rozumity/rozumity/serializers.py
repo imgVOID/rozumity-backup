@@ -635,7 +635,7 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
         data['included'] = included
         return data
 
-# TODO: rewrite included reverse() to the to_representation() method, not to relationships serializer
+# TODO: add _view_name to included as a separate field, execute reverse in the ManySerializer and to_representation
 class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
     class Type(JSONAPITypeIdSerializer):
         pass
