@@ -314,9 +314,7 @@ class JSONAPIBaseSerializer:
     async def is_valid(self, *, raise_exception=False):
         if not hasattr(self, '_validated_data'):
             try:
-                self._validated_data = await self.to_internal_value(
-                    await deepcopy_async(self.initial_data)
-                )
+                self._validated_data = await self.to_internal_value(self.initial_data)
             except ValidationError as exc:
                 self._validated_data = {}
                 self._errors = exc.detail
