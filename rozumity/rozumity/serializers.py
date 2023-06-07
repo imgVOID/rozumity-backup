@@ -305,9 +305,8 @@ class JSONAPIBaseSerializer:
         return self.initial
     
     async def get_value(self, field_name, dictionary=None):
-        value = dictionary.get(field_name, None)
-        return value.pop('data', value) if type(value) == dict else value
-    
+        return dictionary.get(field_name, None)
+
     async def run_validation(self, data={}):
         await self.is_valid(raise_exception=True)
         return await self.validated_data
@@ -542,6 +541,7 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
         fields = await self.fields
         for name, field in fields.items():
             value = await self.get_value(name, data)
+            value = value.pop('data', value) if type(value) == dict else value
             value = [value] if type(value) != list else value
             error_name = f'relationships.{field.field_name}.data'
             if hasattr(field, 'child'):
