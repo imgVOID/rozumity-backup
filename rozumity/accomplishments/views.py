@@ -1,13 +1,11 @@
 from django.core.exceptions import ObjectDoesNotExist
-from django.db.models import Prefetch
 from rest_framework.response import Response
 from rest_framework.authentication import SessionAuthentication
 from adrf.viewsets import ViewSet
 from aiofiles import open
 
 from cities_light.models import Country
-from rozumity.paginations import LimitOffsetAsyncPagination
-from rozumity.serializers import JSONAPISerializer
+from rozumity.paginations import LimitOffsetAsyncPagination, get_current_site
 
 from .models import University, Test
 from .permissions import UniversityPermission
@@ -23,14 +21,14 @@ class TestViewSet(ViewSet):
     )
     
     async def list(self, request):
-        objects = self.pagination_class.paginate_queryset(
-            self.queryset.order_by('id'), request=request
+        objects = await self.pagination_class.paginate_queryset(
+            self.queryset.order_by('id'), request=request, has_path=True
         )
-        objects = [university async for university in await objects]
+        objects, path = [university async for university in objects], objects.path
         objects_length = len(objects)
         if objects_length:
             data = await TestSerializer(
-                objects, many=True, context={'request': request},
+                objects, many=True, context={'request': request, 'source': path},
                 max_length=objects_length, min_length=objects_length
             ).data
             response = await self.pagination_class.get_paginated_response(data)
@@ -47,8 +45,9 @@ class TestViewSet(ViewSet):
         return response
     
     async def create(self, request):
+        source = f'http://{await get_current_site(request)}{request.path}'
         serializer_full = TestSerializer(
-            data=request.data, many=False, context={'request': request}
+            data=request.data, many=False, context={'source': source}
         )
         if await serializer_full.is_valid():
             response_data = await serializer_full.data
@@ -73,15 +72,15 @@ class UniversityViewSet(ViewSet):
                 "status": 400, "title": "Bad request",
                 "detail": f'Please enter a valid alpha-2 country code.'
             }]})
-        objects = self.pagination_class.paginate_queryset(
-            self.queryset.filter(country__code2=alpha2.upper()).order_by('id'), 
-            request=request
+        objects = self.queryset.filter(country__code2=alpha2.upper()).order_by('id')
+        objects = await self.pagination_class.paginate_queryset(
+            objects, request=request, has_path=True
         )
-        objects = [university async for university in await objects]
+        objects, path = [university async for university in objects], objects.path
         objects_length = len(objects)
         if objects_length:
             data = await UniversitySerializer(
-                objects, many=True, context={'request': request},
+                objects, many=True, context={'request': request, 'source': path},
                 max_length=objects_length, min_length=objects_length
             ).data
             response = await self.pagination_class.get_paginated_response(data)

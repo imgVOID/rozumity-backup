@@ -7,6 +7,7 @@ from django.db.models.manager import BaseManager
 from django.core.exceptions import ImproperlyConfigured, SynchronousOnlyOperation
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import MaxLengthValidator, MinLengthValidator
+from django.contrib.sites.shortcuts import get_current_site
 from rest_framework import serializers
 from rest_framework.reverse import reverse
 from rest_framework.exceptions import ValidationError
@@ -24,9 +25,9 @@ deepcopy_async = sync_to_async(deepcopy)
 
 async def get_field_info(model):
     opts = model._meta.concrete_model._meta
-    fields = {}
+    fields, forward_relations = {}, {}
     for field in (field for field in opts.fields if field.serialize and not field.remote_field):
-        forward_relations = {}
+        fields[field.name] = {}
     for field in (field for field in opts.fields if field.serialize and field.remote_field):
         forward_relations[field.name] = {'to_many': False}
     # Deal with forward many-to-many relationships.
@@ -467,7 +468,7 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
         self.min_length = kwargs.pop('min_length', None)
         assert self.child is not None, '`child` is a required argument.'
         super().__init__(*args, **kwargs)
-        self.child.bind(field_name='', parent=self)
+        self.child.field_name, self.child.parent = '', self
 
     def __repr__(self):
         return str(JSONAPISerializerRepr(self, force_many=self.child))
@@ -605,15 +606,18 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
         data = {name: await self.get_value(
             name, {key: getattr(instance, key) for key in fields.keys()}
         ) for name in fields.keys()}
+        parent_id = str(self._context.get("parent_id"))
         source = self.source
-        source_id = f'{source}{str(self._context.get("parent_id"))}'
+        if source is not None:
+            source_pk = source.split('/')[-2]
+            if source_pk != parent_id:
+                source = source.replace(source_pk, parent_id)
+            else:
+                source += parent_id
         value, included = [], []
         for key, val in data.items():
             if hasattr(val, 'all'):
-                field, field._view_name = fields[key].child, fields[key].child._view_name
-                objects_list = []
-                async for e in val.all():
-                    objects_list.append(e)
+                objects_list = [e async for e in val.all()]
             else:
                 objects_list = [val]
             field_info = await get_field_info(objects_list[0])
@@ -644,14 +648,14 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
                 field = fields[key]
                 if hasattr(field, 'child'):
                     field, field._view_name = field.child, field.child._view_name
-                if field._view_name and source:
+                if field._view_name and self.source:
                     data_included['links'] = [field._view_name, [data_included['id']]]
                 included.append(data_included)
             data[key] = {'data': value.pop() if len(value) == 1 else value}
-            if source:
+            if self.source:
                 data[key]['links'] = {
-                    'self': f"{source_id}/relationships/{key}/",
-                    'related': f"{source_id}/{key}/"
+                    'self': f"{source}relationships/{key}/",
+                    'related': f"{source}{key}/"
                 }
         data['included'] = included
         return data
@@ -675,12 +679,12 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
     
     def __init__(self, instance=None, data=None, **kwargs):
         super().__init__(instance, data, **kwargs)
-        request = self._context.get('request')
-        if request:
-            self.source = request.build_absolute_uri()
-            self.source = self.source.split('?')[0]
-            if self.source[-2].isnumeric():
-                self.source = '/'.join(self.source.split('/')[:-2]) + '/'
+        context = self._context
+        request, source = context.get('request'), context.get('source')
+        if source:
+            self.source = source
+        elif request:
+            self.source = f'http://{get_current_site(self.request)}{self.request.path}'
     
     async def to_internal_value(self, data):
         ret = {}

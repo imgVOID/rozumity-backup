@@ -1,5 +1,6 @@
 from contextlib import suppress
 from django.utils.translation import gettext_lazy as _
+from django.contrib.sites.shortcuts import get_current_site
 from rest_framework.settings import api_settings
 from rest_framework.response import Response
 from rest_framework.utils.urls import remove_query_param, replace_query_param
@@ -16,25 +17,11 @@ class LimitOffsetAsyncPagination:
     template = 'rest_framework/pagination/numbers.html'
 
     @staticmethod
-    async def _replace_query_param(*args, **kwargs):
-        return await sync_to_async(replace_query_param)(*args, **kwargs)
-    
-    @staticmethod
-    async def _remove_query_param(*args, **kwargs):
-        return await sync_to_async(remove_query_param)(*args, **kwargs)
-    
-    @staticmethod
     async def _encode_url_parameters(url):
-        """
-        Encode unicode symbols in url parameters
-        """
-        return url.replace('%5B', '[').replace('%5D', ']').replace('?page[offset]=0', '')
+        return url.replace('%5B', '[').replace('%5D', ']')
     
     @staticmethod
     async def _positive_int(integer_string, strict=False, cutoff=None):
-        """
-        Cast a string to a strictly positive integer.
-        """
         ret = int(integer_string)
         if ret < 0 or (ret == 0 and strict):
             raise ValueError()
@@ -42,10 +29,26 @@ class LimitOffsetAsyncPagination:
             return min(ret, cutoff)
         return ret
     
+    async def _get_current_site(self, *args):
+        if not hasattr(self, 'current_site'):
+            self.current_site = sync_to_async(get_current_site)
+        return await self.current_site(*args)
+    
     async def _get_absolute_uri(self):
-        return await sync_to_async(self.request.build_absolute_uri)()
+        return f'http://{await self._get_current_site(self.request)}{self.request.path}'
+    
+    async def _replace_query_param(self, *args):
+        if not hasattr(self, 'replace_query_param'):
+            self.replace_query_param = sync_to_async(replace_query_param)
+        return await self.replace_query_param(*args)
+    
+    async def _remove_query_param(self, *args):
+        if not hasattr(self, 'remove_query_param'):
+            self.remove_query_param = sync_to_async(remove_query_param)
+        return await self.remove_query_param(*args)
 
-    async def paginate_queryset(self, queryset, request, view=None):
+    async def paginate_queryset(self, queryset, request, 
+                                view=None, has_path=False):
         self.request = request
         self.limit = await self.get_limit(request)
         if self.limit is None:
@@ -54,12 +57,15 @@ class LimitOffsetAsyncPagination:
         self.offset = await self.get_offset(request)
         if self.count == 0 or self.offset > self.count:
             return []
-        return queryset[self.offset:self.offset + self.limit]
+        queryset = queryset[self.offset:self.offset + self.limit]
+        if has_path:
+            queryset.path = await self._get_absolute_uri()
+        return queryset
 
     async def get_paginated_response(self, data):
         links = {
             'self': await self._encode_url_parameters(
-                await self._get_absolute_uri()
+                await sync_to_async(self.request.build_absolute_uri)()
             )
         }
         next = await self.get_next_link()
@@ -174,9 +180,8 @@ class LimitOffsetAsyncPagination:
         return await self._encode_url_parameters(url)
 
     async def get_limit(self, request):
-        supress_async = sync_to_async(suppress)
         if self.limit_query_param:
-            with await supress_async(KeyError, ValueError):
+            with suppress(KeyError, ValueError):
                 return await self._positive_int(
                     request.query_params[self.limit_query_param],
                     strict=True,
