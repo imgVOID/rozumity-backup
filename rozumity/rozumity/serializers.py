@@ -10,7 +10,6 @@ from django.core.validators import MaxLengthValidator, MinLengthValidator
 from rest_framework import serializers
 from rest_framework.reverse import reverse
 from rest_framework.exceptions import ValidationError
-from rest_framework.utils.model_meta import get_field_info
 from rest_framework.utils.serializer_helpers import (
     BindingDict, BoundField, JSONBoundField, NestedBoundField, ReturnDict
 )
@@ -19,9 +18,21 @@ from rest_framework.fields import (JSONField, CharField, IntegerField,
                                    Field, SkipField, get_error_detail)
 from asgiref.sync import sync_to_async
 
-get_field_info = sync_to_async(get_field_info)
 reverse = sync_to_async(reverse)
 deepcopy_async = sync_to_async(deepcopy)
+
+
+async def get_field_info(model):
+    opts = model._meta.concrete_model._meta
+    fields = {}
+    for field in (field for field in opts.fields if field.serialize and not field.remote_field):
+        forward_relations = {}
+    for field in (field for field in opts.fields if field.serialize and field.remote_field):
+        forward_relations[field.name] = {'to_many': False}
+    # Deal with forward many-to-many relationships.
+    for field in (field for field in opts.many_to_many if field.serialize):
+        forward_relations[field.name] = {'to_many': True}
+    return {'fields': fields, 'forward_relations': forward_relations}
 
 
 class cached_property(object):
@@ -493,10 +504,12 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
             ).data
             included_obj_data = obj_data.pop('included', [])
             if included_obj_data is not None:
-                included.update({
-                    f'{obj["type"]}_{obj["id"]}': dict(obj) 
-                    for obj in included_obj_data
-                })
+                for obj in included_obj_data:
+                    key = f'{obj["type"]}_{obj["id"]}'
+                    try:
+                        included[key]
+                    except KeyError:
+                        included[key] = obj
             data['data'].append(*obj_data.pop('data'))
         if included:
             data['included'] = list(included.values())
@@ -608,11 +621,11 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
                 data_included = {'type': obj.__class__.__name__.lower(), 'id': obj.id}
                 data_new = data_included.copy()
                 value.append(data_new)
-                for attribute in field_info.fields.keys():
+                for attribute in field_info.get('fields').keys():
                     if not data_included.get('attributes'):
                         data_included['attributes'] = {}
                     data_included['attributes'][attribute] = getattr(obj, attribute)
-                for relationship in field_info.forward_relations.keys():
+                for relationship in field_info.get('forward_relations').keys():
                     if not data_included.get('relationships'):
                         data_included['relationships'] = {}
                     objects_list = getattr(obj, relationship)
@@ -626,7 +639,7 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
                     objects_list = [await JSONAPITypeIdSerializer(inner_obj).data 
                                     for inner_obj in objects_list]
                     data_included['relationships'][relationship] = {
-                        'data': objects_list if len(objects_list) > 1 else objects_list.pop(),
+                        'data': objects_list if len(objects_list) > 1 else objects_list.pop()
                     }
                 field = fields[key]
                 if hasattr(field, 'child'):

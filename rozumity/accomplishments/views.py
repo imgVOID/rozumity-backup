@@ -18,21 +18,21 @@ class TestViewSet(ViewSet):
     permission_classes=[UniversityPermission]
     authentication_classes = [SessionAuthentication]
     pagination_class = LimitOffsetAsyncPagination
+    queryset = Test.objects.prefetch_related('country').select_related(
+        'city__subregion', 'city__region', 'city__country'
+    )
     
-    # TODO: rewrite query and pagination so objects will not to be loaded above the limit
     async def list(self, request):
-        objects = []
-        async for university in Test.objects.prefetch_related('country').select_related(
-            'city__subregion', 'city__region', 'city__country'
-        ):
-            objects.append(university)
-        if objects:
-            objects = await self.pagination_class.paginate_queryset(
-                queryset=objects, request=request
-            )
+        objects = self.pagination_class.paginate_queryset(
+            self.queryset.order_by('id'), request=request
+        )
+        objects = [university async for university in await objects]
+        objects_length = len(objects)
+        if objects_length:
             data = await TestSerializer(
-                    objects, many=True, context={'request': request}
-                ).data
+                objects, many=True, context={'request': request},
+                max_length=objects_length, min_length=objects_length
+            ).data
             response = await self.pagination_class.get_paginated_response(data)
             # TODO: write unit tests
             serializer_field = await TestSerializer(objects, many=True)['attributes']
@@ -65,6 +65,7 @@ class UniversityViewSet(ViewSet):
     permission_classes=[UniversityPermission]
     authentication_classes = [SessionAuthentication]
     pagination_class = LimitOffsetAsyncPagination
+    queryset = University.objects.select_related('country')
     
     async def list(self, request, alpha2):
         if len(alpha2) != 2:
@@ -72,16 +73,17 @@ class UniversityViewSet(ViewSet):
                 "status": 400, "title": "Bad request",
                 "detail": f'Please enter a valid alpha-2 country code.'
             }]})
-        else:
-            objects = []
-        async for university in University.objects.select_related('country').filter(country__code2=alpha2.upper()):
-            objects.append(university)
-        if objects:
+        objects = self.pagination_class.paginate_queryset(
+            self.queryset.filter(country__code2=alpha2.upper()).order_by('id'), 
+            request=request
+        )
+        objects = [university async for university in await objects]
+        objects_length = len(objects)
+        if objects_length:
             data = await UniversitySerializer(
-                    await self.pagination_class.paginate_queryset(
-                        queryset=objects, request=request
-                    ), many=True, context={'request': request}
-                ).data
+                objects, many=True, context={'request': request},
+                max_length=objects_length, min_length=objects_length
+            ).data
             response = await self.pagination_class.get_paginated_response(data)
         else:
             response = Response(status=404, data={"errors": [{

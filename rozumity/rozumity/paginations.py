@@ -54,7 +54,7 @@ class LimitOffsetAsyncPagination:
         self.offset = await self.get_offset(request)
         if self.count == 0 or self.offset > self.count:
             return []
-        return list(queryset[self.offset:self.offset + self.limit])
+        return queryset[self.offset:self.offset + self.limit]
 
     async def get_paginated_response(self, data):
         links = {
@@ -194,7 +194,7 @@ class LimitOffsetAsyncPagination:
     
     async def get_count(self, queryset):
         try:
-            return await queryset.count()
+            return await queryset.acount()
         except (AttributeError, TypeError):
             return len(queryset)
 
