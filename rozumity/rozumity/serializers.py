@@ -292,13 +292,15 @@ class JSONAPIBaseSerializer:
         if not keys:
             dictionary.update(value)
             return
-
-        for key in keys[:-1]:
+        for key in keys:
             if key not in dictionary:
                 dictionary[key] = {}
-            dictionary = dictionary[key]
-
-        dictionary[keys[-1]] = value
+            if len(value) > 1:
+                if dictionary[key].get('data') is None:
+                    dictionary[key]['data'] = []
+                dictionary[key]['data'].append(value)
+            else:
+                dictionary[key] = {'data': value}
     
     @cached_property
     async def fields(self):
@@ -337,39 +339,45 @@ class JSONAPIBaseSerializer:
         if self._errors and raise_exception:
             raise ValidationError(self._errors)
         return not bool(self._errors)
+
+    async def _to_internal_value_helper(self, validation_coroutine, error_name, required):
+        validated_value, errors = {}, {}
+        try:
+                validated_value = await validation_coroutine
+        except ValidationError as exc:
+            detail = exc.detail
+            if type(detail) == dict:
+                for key, val in detail.items():
+                    errors[f'{error_name}.{key}'] = val
+            else:
+                errors[error_name] = detail
+        except DjangoValidationError as exc:
+            errors[error_name] = get_error_detail(exc)
+        except AttributeError as exc:
+            if required:
+                errors[error_name] = ValidationError(
+                    'This field may not be null.'
+                ).detail
+        except SkipField:
+            pass
+        return validated_value, errors
     
     async def to_internal_value(self, data):
         ret = {}
         errors = {}
         fields = await self.fields
         for name, field in fields.items():
-            value = await self.get_value(name, data)
             run_validation = field.run_validation
             if not iscoroutinefunction(run_validation):
                 run_validation = sync_to_async(run_validation)
-            try:
-                validated_value = await run_validation(value)
-            except ValidationError as exc:
-                detail = exc.detail
-                if not field.required and not value:
-                    pass
-                else:
-                    errors[
-                        f'attributes.{field.field_name}' if 
-                        self.__class__.__name__.lower() == 'attributes' 
-                        else name
-                    ] = detail
-            except AttributeError as exc:
-                if field.required:
-                    errors[f'attributes.{field.field_name}'] = ValidationError(
-                        'This field may not be null.'
-                    ).detail
-            except DjangoValidationError as exc:
-                errors[name] = get_error_detail(exc)
-            except SkipField:
-                pass
-            else:
+            validated_value, errors_field = await self._to_internal_value_helper(
+                run_validation(await self.get_value(name, data)), 
+                field.field_name, field.required
+            )
+            if not errors_field:
                 await self.set_value(ret, {}, {name: validated_value})
+            else:
+                errors.update(errors_field)
         if errors:
             raise ValidationError(errors)
         else:
@@ -550,52 +558,26 @@ class JSONAPIAttributesSerializer(JSONAPIBaseSerializer, metaclass=SerializerMet
 
 
 class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
-    async def _add_value(self, dictionary, keys, value):
-        for key in keys:
-            if not dictionary.get(key):
-                dictionary[key] = {'data': []}
-            dictionary[key]['data'].append(value)
-    
     async def to_internal_value(self, data):
         ret = {}
         errors = {}
         fields = await self.fields
         for name, field in fields.items():
+            if hasattr(field, 'child'):
+                field.child.required, field = field.required, field.child
             value = await self.get_value(name, data)
             value = value.pop('data', value) if type(value) == dict else value
             value = [value] if type(value) != list else value
             error_name = f'relationships.{field.field_name}.data'
-            if hasattr(field, 'child'):
-                field.child.required, field = field.required, field.child
             run_validation = field.run_validation
             if not iscoroutinefunction(run_validation):
                 run_validation = sync_to_async(run_validation)
             for obj in value:
-                try:
-                    validated_value = await run_validation(obj)
-                except ValidationError as exc:
-                    detail = exc.detail
-                    if type(detail) == dict:
-                        for key, val in detail.items():
-                            errors[f'{error_name}.{key}'] = val
-                    else:
-                        errors[error_name] = detail
-                except DjangoValidationError as exc:
-                    errors[error_name] = get_error_detail(exc)
-                except AttributeError as exc:
-                    if field.required:
-                        errors[error_name] = ValidationError(
-                            'This field may not be null.'
-                        ).detail
-                except SkipField:
-                    pass
-                else:
-                    if len(value) == 1:
-                        await self.set_value(
-                            ret, {}, {name: {'data': validated_value}}
-                        )
-                    else:
-                        await self._add_value(ret, [name], validated_value)
+                validated_value, errors = await self._to_internal_value_helper(
+                    run_validation(obj), error_name, field.required
+                )
+                if not errors:
+                    await self.set_value(ret, {name: None}, validated_value)
         if errors:
             raise ValidationError(errors)
         else:
@@ -676,7 +658,7 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
         if request:
             self.source = f'http://{request.get_host()}{request.path}'
     
-    async def _format_data(self, data):
+    async def to_internal_value(self, data):
         error_data = {'data': ["The field must contain a valid object description."]}
         try:
             data = data['data']
@@ -693,33 +675,7 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
                     return data.pop()
             else:
                 raise ValidationError(error_data)
-        return data
-        
-    
-    async def to_internal_value(self, data):
-        ret = {}
-        errors = {}
-        fields = await self.fields
-        data = await self._format_data(data)
-        for name, field in fields.items():
-            run_validation = field.run_validation
-            if not iscoroutinefunction(run_validation):
-                run_validation = sync_to_async(run_validation)
-            value = await self.get_value(name, data)
-            try:
-                validated_value = await run_validation(value)
-            except ValidationError as exc:
-                errors[name] = exc.detail
-            except DjangoValidationError as exc:
-                errors[name] = get_error_detail(exc)
-            except SkipField:
-                pass
-            else:
-                await self.set_value(ret, {}, {name: validated_value})
-        if errors:
-            raise ValidationError(errors)
-        else:
-            return ret
+        return await super().to_internal_value(data)
     
     async def to_representation(self, instance):
         fields = await self.fields
