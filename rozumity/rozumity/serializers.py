@@ -320,7 +320,8 @@ class JSONAPIBaseSerializer:
         return dictionary.get(field_name, None)
 
     async def run_validation(self, data={}):
-        self.initial_data = data
+        if data is not None:
+            self.initial_data = data
         await self.is_valid(raise_exception=True)
         return await self.validated_data
     
@@ -601,18 +602,20 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
             return ret
     
     async def to_representation(self, instance):
+        if self.source is not None:
+            self.source += '1/'
         fields = await self.fields
         data = {name: await self.get_value(
             name, {key: getattr(instance, key) for key in fields.keys()}
         ) for name in fields.keys()}
         parent_id = str(self._context.get("parent_id"))
         source = self.source
-        if source is not None:
-            source_pk = source.split('/')[-2]
-            if source_pk != parent_id:
-                source = source.replace(source_pk, parent_id)
-            else:
-                source += parent_id
+        if source is not None and parent_id not in source:
+            source = f"{source}{key}/"
+            # source_pk = source.split('/')[-2]
+            # if source_pk[-1].isnumeric() and source_pk != parent_id:
+            #     source = source.replace(source_pk, parent_id)
+            #source += parent_id
         value, included = [], []
         for key, val in data.items():
             if hasattr(val, 'all'):
