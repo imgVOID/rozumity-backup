@@ -602,8 +602,6 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
             return ret
     
     async def to_representation(self, instance):
-        if self.source is not None:
-            self.source += '1/'
         fields = await self.fields
         data = {name: await self.get_value(
             name, {key: getattr(instance, key) for key in fields.keys()}
@@ -611,7 +609,7 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
         parent_id = str(self._context.get("parent_id"))
         source = self.source
         if source is not None and parent_id not in source:
-            source = f"{source}{key}/"
+            source = f"{source}{parent_id}/"
             # source_pk = source.split('/')[-2]
             # if source_pk[-1].isnumeric() and source_pk != parent_id:
             #     source = source.replace(source_pk, parent_id)
