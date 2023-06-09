@@ -14,7 +14,7 @@ class LimitOffsetAsyncPagination:
     offset_query_param = 'page[offset]'
     offset_query_description = _('The initial index from which to return the results.')
     max_limit = None
-    template = 'rest_framework/pagination/numbers.html'
+    current_site = None
 
     @staticmethod
     async def _encode_url_parameters(url):
@@ -30,9 +30,9 @@ class LimitOffsetAsyncPagination:
         return ret
     
     async def _get_current_site(self, *args):
-        if not hasattr(self, 'current_site'):
-            self.current_site = sync_to_async(get_current_site)
-        return await self.current_site(*args)
+        if self.current_site is None:
+            self.current_site = await sync_to_async(get_current_site)(*args)
+        return self.current_site
     
     async def _get_absolute_uri(self):
         return f'http://{await self._get_current_site(self.request)}{self.request.path}'
@@ -47,8 +47,7 @@ class LimitOffsetAsyncPagination:
             self.remove_query_param = sync_to_async(remove_query_param)
         return await self.remove_query_param(*args)
 
-    async def paginate_queryset(self, queryset, request, 
-                                view=None, has_path=False):
+    async def paginate_queryset(self, queryset, request):
         self.request = request
         self.limit = await self.get_limit(request)
         if self.limit is None:
@@ -58,8 +57,6 @@ class LimitOffsetAsyncPagination:
         if self.count == 0 or self.offset > self.count:
             return []
         queryset = queryset[self.offset:self.offset + self.limit]
-        if has_path:
-            queryset.path = await self._get_absolute_uri()
         return queryset
 
     async def get_paginated_response(self, data):

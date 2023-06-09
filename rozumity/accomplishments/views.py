@@ -1,3 +1,4 @@
+import time
 from django.core.exceptions import ObjectDoesNotExist
 from rest_framework.response import Response
 from rest_framework.authentication import SessionAuthentication
@@ -22,13 +23,13 @@ class TestViewSet(ViewSet):
     
     async def list(self, request):
         objects = await self.pagination_class.paginate_queryset(
-            self.queryset.order_by('id'), request=request, has_path=True
+            self.queryset.order_by('id'), request=request
         )
-        objects, path = [university async for university in objects], objects.path
+        objects = [university async for university in objects]
         objects_length = len(objects)
         if objects_length:
             data = await TestSerializer(
-                objects, many=True, context={'request': request, 'source': path},
+                objects, many=True, context={'request': request}, 
                 max_length=objects_length, min_length=objects_length
             ).data
             response = await self.pagination_class.get_paginated_response(data)
@@ -45,9 +46,9 @@ class TestViewSet(ViewSet):
         return response
     
     async def create(self, request):
-        source = f'http://{await get_current_site(request)}{request.path}'
+        startT = time.time()
         serializer_full = TestSerializer(
-            data=request.data, many=False, context={'source': source}
+            data=request.data, many=False, context={'request': request}
         )
         if await serializer_full.is_valid():
             response_data = await serializer_full.data
@@ -55,6 +56,7 @@ class TestViewSet(ViewSet):
         else:
             response_data = await serializer_full.errors
             status = 403
+        print(f'function time: {time.time() - startT}ms')
         return Response(data=response_data, status=status)
 
 
@@ -74,15 +76,17 @@ class UniversityViewSet(ViewSet):
             }]})
         objects = self.queryset.filter(country__code2=alpha2.upper()).order_by('id')
         objects = await self.pagination_class.paginate_queryset(
-            objects, request=request, has_path=True
+            objects, request=request
         )
-        objects, path = [university async for university in objects], objects.path
+        objects = [university async for university in objects]
         objects_length = len(objects)
         if objects_length:
+            startT = time.time()
             data = await UniversitySerializer(
-                objects, many=True, context={'request': request, 'source': path},
+                objects, many=True, context={'request': request},
                 max_length=objects_length, min_length=objects_length
             ).data
+            print(f'function time: {time.time() - startT}ms')
             response = await self.pagination_class.get_paginated_response(data)
         else:
             response = Response(status=404, data={"errors": [{

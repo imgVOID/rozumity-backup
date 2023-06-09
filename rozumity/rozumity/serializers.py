@@ -7,7 +7,6 @@ from django.db.models.manager import BaseManager
 from django.core.exceptions import ImproperlyConfigured, SynchronousOnlyOperation
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import MaxLengthValidator, MinLengthValidator
-from django.contrib.sites.shortcuts import get_current_site
 from rest_framework import serializers
 from rest_framework.reverse import reverse
 from rest_framework.exceptions import ValidationError
@@ -320,6 +319,7 @@ class JSONAPIBaseSerializer:
         return dictionary.get(field_name, None)
 
     async def run_validation(self, data={}):
+        self.initial_data = data
         await self.is_valid(raise_exception=True)
         return await self.validated_data
     
@@ -342,12 +342,11 @@ class JSONAPIBaseSerializer:
         fields = await self.fields
         for name, field in fields.items():
             value = await self.get_value(name, data)
+            run_validation = field.run_validation
+            if not iscoroutinefunction(run_validation):
+                run_validation = sync_to_async(run_validation)
             try:
-                validated_value = field.run_validation(value)
-                try:
-                    validated_value = await validated_value
-                except TypeError:
-                    pass
+                validated_value = await run_validation(value)
             except ValidationError as exc:
                 detail = exc.detail
                 if not field.required and not value:
@@ -403,7 +402,7 @@ class JSONAPIBaseSerializer:
                 self._data = self._validated_data
             else:
                 self._data = await self.get_initial()
-        return self._data
+        return ReturnDict(self._data, serializer=self)
 
     @property
     async def errors(self):
@@ -566,13 +565,12 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
             error_name = f'relationships.{field.field_name}.data'
             if hasattr(field, 'child'):
                 field.child.required, field = field.required, field.child
+            run_validation = field.run_validation
+            if not iscoroutinefunction(run_validation):
+                run_validation = sync_to_async(run_validation)
             for obj in value:
                 try:
-                    validated_value = field.__class__(data=obj).run_validation(obj)
-                    try:
-                        validated_value = await validated_value
-                    except TypeError:
-                        pass
+                    validated_value = await run_validation(obj)
                 except ValidationError as exc:
                     detail = exc.detail
                     if type(detail) == dict:
@@ -679,33 +677,42 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
     
     def __init__(self, instance=None, data=None, **kwargs):
         super().__init__(instance, data, **kwargs)
-        context = self._context
-        request, source = context.get('request'), context.get('source')
-        if source:
-            self.source = source
-        elif request:
-            self.source = f'http://{get_current_site(self.request)}{self.request.path}'
+        request = self._context.get('request')
+        if request:
+            self.source = f'http://{request.get_host()}{request.path}'
+    
+    async def _format_data(self, data):
+        error_data = {'data': ["The field must contain a valid object description."]}
+        try:
+            data = data['data']
+            data['id']
+        except KeyError:
+            raise ValidationError(error_data)
+        except TypeError:
+            if type(data) == list: 
+                if len(data) > 1:
+                    error_data['data'] = ("The bulk objects validation "
+                                          "functionality is not supported.")
+                    raise ValidationError(error_data)
+                else:
+                    return data.pop()
+            else:
+                raise ValidationError(error_data)
+        return data
+        
     
     async def to_internal_value(self, data):
         ret = {}
         errors = {}
         fields = await self.fields
+        data = await self._format_data(data)
         for name, field in fields.items():
-            if name == 'included':
-                continue
+            run_validation = field.run_validation
+            if not iscoroutinefunction(run_validation):
+                run_validation = sync_to_async(run_validation)
             value = await self.get_value(name, data)
-            if isinstance(field, JSONAPIBaseSerializer):
-                field = field.__class__(
-                    data={} if value is None else value
-                )
-            else:
-                pass
             try:
-                validated_value = field.run_validation(value)
-                try:
-                    validated_value = await validated_value
-                except TypeError:
-                    pass
+                validated_value = await run_validation(value)
             except ValidationError as exc:
                 errors[name] = exc.detail
             except DjangoValidationError as exc:
@@ -743,13 +750,11 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
         included = data['relationships'].pop('included', [])
         if self.source and not self._context.get('many', None):
             for data in included:
-                data['links']= {'self': await reverse(
+                data['links'] = {'self': await reverse(
                     *data['links'], request=self._context.get('request')
                 )}
-        return {
-            'data': [{**data, 'links': {'self': source}}], 
-            'links': {'self': source}, 'included': included
-        } if source else {'data': [data], 'included': included}
+        return {'data': [{**data, 'links': {'self': f'{source}{obj_map.get("id")}/'}}] 
+                if source else [{'data': [data]}], 'included': included}
 
     @cached_property
     async def errors(self):
