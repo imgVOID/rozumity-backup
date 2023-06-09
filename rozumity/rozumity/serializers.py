@@ -187,6 +187,7 @@ class ListField(serializers.ListField):
 # TODO: create validation methods for serializers and fields
 # TODO: check if prefetch_related works with async queryset
 # TODO: make to_internal_value base method to reuse it in all the serializers
+# TODO: write an JSONAPI object describing the server’s implementation
 class JSONAPIBaseSerializer:
     _creation_counter = 0
     source = None
@@ -651,10 +652,7 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
                 included.append(data_included)
             data[key] = {'data': value.pop() if len(value) == 1 else value}
             if self.source:
-                data[key]['links'] = {
-                    'self': f"{source}relationships/{key}/",
-                    'related': f"{source}{key}/"
-                }
+                data[key]['links'] = {'related': f"{source}{key}/"}
         data['included'] = included
         return data
 
