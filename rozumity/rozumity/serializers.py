@@ -362,14 +362,18 @@ class JSONAPIBaseSerializer:
             pass
         return validated_value, errors
     
+    @staticmethod
+    async def _to_coroutine(function):
+        if not iscoroutinefunction(function):
+            function = sync_to_async(function)
+        return function
+    
     async def to_internal_value(self, data):
         ret = {}
         errors = {}
         fields = await self.fields
         for name, field in fields.items():
-            run_validation = field.run_validation
-            if not iscoroutinefunction(run_validation):
-                run_validation = sync_to_async(run_validation)
+            run_validation = await self._to_coroutine(field.run_validation)
             validated_value, errors_field = await self._to_internal_value_helper(
                 run_validation(await self.get_value(name, data)), 
                 field.field_name, field.required
@@ -568,13 +572,12 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
             value = await self.get_value(name, data)
             value = value.pop('data', value) if type(value) == dict else value
             value = [value] if type(value) != list else value
-            error_name = f'relationships.{field.field_name}.data'
-            run_validation = field.run_validation
-            if not iscoroutinefunction(run_validation):
-                run_validation = sync_to_async(run_validation)
+            run_validation = await self._to_coroutine(field.run_validation)
             for obj in value:
                 validated_value, errors = await self._to_internal_value_helper(
-                    run_validation(obj), error_name, field.required
+                    run_validation(obj), 
+                    f'relationships.{field.field_name}.data', 
+                    field.required
                 )
                 if not errors:
                     await self.set_value(ret, {name: None}, validated_value)
