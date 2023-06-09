@@ -608,12 +608,8 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
         ) for name in fields.keys()}
         parent_id = str(self._context.get("parent_id"))
         source = self.source
-        if source is not None and parent_id not in source:
+        if source is not None and not source.endswith(parent_id + '/'):
             source = f"{source}{parent_id}/"
-            # source_pk = source.split('/')[-2]
-            # if source_pk[-1].isnumeric() and source_pk != parent_id:
-            #     source = source.replace(source_pk, parent_id)
-            #source += parent_id
         value, included = [], []
         for key, val in data.items():
             if hasattr(val, 'all'):
