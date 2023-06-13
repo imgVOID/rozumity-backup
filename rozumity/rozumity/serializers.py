@@ -159,35 +159,10 @@ class ValidateFieldType:
             raise serializers.ValidationError(message)
 
 
-class ListField(serializers.ListField):
-    def __init__(self, **kwargs):
-        self.child = kwargs.pop('child', deepcopy(self.child))
-        self.allow_empty = kwargs.pop('allow_empty', True)
-        self.max_length = kwargs.pop('max_length', None)
-        self.min_length = kwargs.pop('min_length', None)
-
-        assert not inspect.isclass(self.child), '`child` has not been instantiated.'
-        assert self.child.source is None, (
-            "The `source` argument is not meaningful when applied to a `child=` field. "
-            "Remove `source=` from the field declaration."
-        )
-
-        serializers.Field.__init__(self, **kwargs)
-        self.child.field_name = ''
-        self.child.parent = self
-        if self.max_length is not None:
-            message = lazy_format(self.error_messages['max_length'], max_length=self.max_length)
-            self.validators.append(MaxLengthValidator(self.max_length, message=message))
-        if self.min_length is not None:
-            message = lazy_format(self.error_messages['min_length'], min_length=self.min_length)
-            self.validators.append(MinLengthValidator(self.min_length, message=message))
-
-
-# TODO: create length validation, test type validation, probably remove type validation
-# TODO: create validation methods for serializers and fields
+# TODO: create validation methods for serializers
 # TODO: check if prefetch_related works with async queryset
 # TODO: make to_internal_value base method to reuse it in all the serializers
-# TODO: write an JSONAPI object describing the server’s implementation
+# TODO: write an JSONAPI object describing the server’s implementation (version)
 class JSONAPIBaseSerializer:
     _creation_counter = 0
     source = None
@@ -302,16 +277,18 @@ class JSONAPIBaseSerializer:
             else:
                 dictionary[key] = {'data': value}
     
-    @cached_property
+    @property
     async def fields(self):
-        fields = BindingDict(self)
-        declared_fields = await self.get_fields()
-        for key, value in declared_fields.items():
-            fields[key] = value
-        return dict(fields)
+        return await self.get_fields()
     
     async def get_fields(self):
         return await deepcopy_async(self._declared_fields)
+    
+    #async def get_validators(self):
+    #    meta = getattr(self, 'Meta', None)
+    #    validators = getattr(meta, 'validators', None)
+    #    print(validators)
+    #    return list(validators) if validators else []
     
     async def get_initial(self):
         if callable(self.initial):
@@ -343,7 +320,7 @@ class JSONAPIBaseSerializer:
     async def _to_internal_value_helper(self, validation_coroutine, error_name, required):
         validated_value, errors = {}, {}
         try:
-                validated_value = await validation_coroutine
+            validated_value = await validation_coroutine
         except ValidationError as exc:
             detail = exc.detail
             if type(detail) == dict:
@@ -372,11 +349,14 @@ class JSONAPIBaseSerializer:
         ret = {}
         errors = {}
         fields = await self.fields
+        # print('test', fields)
         for name, field in fields.items():
+            #print(field, field.run_validation(await self.get_value(name, data)))
             run_validation = await self._to_coroutine(field.run_validation)
+            
             validated_value, errors_field = await self._to_internal_value_helper(
                 run_validation(await self.get_value(name, data)), 
-                field.field_name, field.required
+                name, field.required
             )
             if not errors_field:
                 await self.set_value(ret, {}, {name: validated_value})
@@ -504,8 +484,8 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
         iterable = self.instance.all() if isinstance(self.instance, BaseManager) else self.instance
         fields = []
         for obj in iterable:
-            field = self.child.__class__(obj)
-            fields.append(await field[key])
+            data = self.child.__class__(obj)
+            fields.append(await data[key])
         return fields
     
     async def to_representation(self, data):
@@ -542,8 +522,8 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
 
 
 class JSONAPITypeIdSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
-    type = CharField(validators=[ValidateFieldType(str)])
-    id = IntegerField(validators=[ValidateFieldType(int)])
+    type = serializers.CharField()
+    id = serializers.IntegerField()
     
     async def to_representation(self, instance):
         fields = await self.fields
@@ -562,6 +542,7 @@ class JSONAPIAttributesSerializer(JSONAPIBaseSerializer, metaclass=SerializerMet
 
 
 class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
+    # TODO: REWRITE WITH BASE CLASS METHOD
     async def to_internal_value(self, data):
         ret = {}
         errors = {}
@@ -574,13 +555,13 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
             value = [value] if type(value) != list else value
             run_validation = await self._to_coroutine(field.run_validation)
             for obj in value:
-                validated_value, errors = await self._to_internal_value_helper(
-                    run_validation(obj), 
-                    f'relationships.{field.field_name}.data', 
-                    field.required
+                validated_value, errors_field = await self._to_internal_value_helper(
+                    run_validation(obj), f'{name}.data', field.required
                 )
-                if not errors:
+                if not errors_field:
                     await self.set_value(ret, {name: None}, validated_value)
+                else:
+                    errors.update(errors_field)
         if errors:
             raise ValidationError(errors)
         else:
@@ -614,7 +595,6 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
                     if not data_included.get('relationships'):
                         data_included['relationships'] = {}
                     objects_list = getattr(obj, relationship)
-                    # TODO: to test an included relation's many to many
                     try:
                         objects_list = await objects_list.all()
                     except AttributeError:
@@ -638,7 +618,7 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
         data['included'] = included
         return data
 
-# TODO: add _view_name to included as a separate field, execute reverse in the ManySerializer and to_representation
+# TODO: SERIALIZE A LIST OF INTEGERS IN THE ATTRIBUTES SECTION
 class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
     class Type(JSONAPITypeIdSerializer):
         pass
@@ -661,24 +641,25 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
         if request:
             self.source = f'http://{request.get_host()}{request.path}'
     
+    @property
+    async def fields(self):
+        return await self.get_fields()
+    
     async def to_internal_value(self, data):
-        error_data = {'data': ["The field must contain a valid object description."]}
+        error_message = "The field must contain a valid object description."
         try:
             data = data['data']
-            data['id']
         except KeyError:
-            raise ValidationError(error_data)
-        except TypeError:
-            if type(data) == list: 
-                if len(data) > 1:
-                    error_data['data'] = ("The bulk objects validation "
-                                          "functionality is not supported.")
-                    raise ValidationError(error_data)
-                else:
-                    return data.pop()
+            raise ValidationError({'data': [error_message]})
+        if type(data) == list:
+            if len(data) == 1:
+                data = data[0]
             else:
-                raise ValidationError(error_data)
-        return await super().to_internal_value(data)
+                raise ValidationError({'data': [
+                    "The bulk action is not supported." 
+                    if data else error_message
+                ]})
+        return await JSONAPIBaseSerializer.to_internal_value(self, data)
     
     async def to_representation(self, instance):
         fields = await self.fields
@@ -728,7 +709,8 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
             error_detail = {'code': 403}
             if self.source:
                 error_detail['source'] = {'pointer': self.source}
-            error_detail['detail'] = f"The JSON field '{key}' caused an exception: {val.pop().lower()}"
+            error_detail['detail'] = (f"The JSON field '{key}' caused an "
+                                      f"exception: {val[0].lower()}")
             error_details.append(error_detail)
         return {"jsonapi": { "version": "1.1" }, 'errors': error_details}
     

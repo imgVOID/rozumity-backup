@@ -6,7 +6,7 @@ from adrf.viewsets import ViewSet
 from aiofiles import open
 
 from cities_light.models import Country
-from rozumity.paginations import LimitOffsetAsyncPagination, get_current_site
+from rozumity.paginations import LimitOffsetAsyncPagination
 
 from .models import University, Test
 from .permissions import UniversityPermission
@@ -61,7 +61,6 @@ class TestViewSet(ViewSet):
 
 
 # TODO: retrieve
-# TODO: serialize when there are many foreign key fields
 class UniversityViewSet(ViewSet):
     permission_classes=[UniversityPermission]
     authentication_classes = [SessionAuthentication]
