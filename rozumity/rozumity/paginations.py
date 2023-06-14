@@ -7,6 +7,11 @@ from rest_framework.utils.urls import remove_query_param, replace_query_param
 from asgiref.sync import sync_to_async
 
 
+remove_query_param = sync_to_async(remove_query_param)
+replace_query_param = sync_to_async(replace_query_param)
+get_current_site = sync_to_async(get_current_site)
+
+
 class LimitOffsetAsyncPagination:
     default_limit = api_settings.PAGE_SIZE
     limit_query_param = 'page[limit]'
@@ -17,11 +22,11 @@ class LimitOffsetAsyncPagination:
     current_site = None
 
     @staticmethod
-    async def _encode_url_parameters(url):
+    async def encode_url_parameters(url):
         return url.replace('%5B', '[').replace('%5D', ']')
     
     @staticmethod
-    async def _positive_int(integer_string, strict=False, cutoff=None):
+    async def positive_int(integer_string, strict=False, cutoff=None):
         ret = int(integer_string)
         if ret < 0 or (ret == 0 and strict):
             raise ValueError()
@@ -29,24 +34,10 @@ class LimitOffsetAsyncPagination:
             return min(ret, cutoff)
         return ret
     
-    async def _get_current_site(self, *args):
-        if self.current_site is None:
-            self.current_site = await sync_to_async(get_current_site)(*args)
-        return self.current_site
+    async def get_absolute_uri(self):
+        request = self.request
+        return f'http://{await get_current_site(request)}{request.path}'
     
-    async def _get_absolute_uri(self):
-        return f'http://{await self._get_current_site(self.request)}{self.request.path}'
-    
-    async def _replace_query_param(self, *args):
-        if not hasattr(self, 'replace_query_param'):
-            self.replace_query_param = sync_to_async(replace_query_param)
-        return await self.replace_query_param(*args)
-    
-    async def _remove_query_param(self, *args):
-        if not hasattr(self, 'remove_query_param'):
-            self.remove_query_param = sync_to_async(remove_query_param)
-        return await self.remove_query_param(*args)
-
     async def paginate_queryset(self, queryset, request):
         self.request = request
         self.limit = await self.get_limit(request)
@@ -61,7 +52,7 @@ class LimitOffsetAsyncPagination:
 
     async def get_paginated_response(self, data):
         links = {
-            'self': await self._encode_url_parameters(
+            'self': await self.encode_url_parameters(
                 await sync_to_async(self.request.build_absolute_uri)()
             )
         }
@@ -133,53 +124,53 @@ class LimitOffsetAsyncPagination:
         if self.offset + self.limit >= self.count:
             return None
         else:
-            url = await self._replace_query_param(
-                await self._get_absolute_uri(), 
+            url = await replace_query_param(
+                await self.get_absolute_uri(), 
                 self.offset_query_param, 
                 self.offset + self.limit
             )
         if self.limit == self.default_limit:
-            url = await self._remove_query_param(url, self.limit_query_param)
+            url = await remove_query_param(url, self.limit_query_param)
         else:
-            url = await self._replace_query_param(url, self.limit_query_param, self.limit)
-        return await self._encode_url_parameters(url)
+            url = await replace_query_param(url, self.limit_query_param, self.limit)
+        return await self.encode_url_parameters(url)
 
     async def get_previous_link(self):
         if self.offset <= 0:
             return None
         elif self.offset - self.limit <= 0:
-            url = await self._remove_query_param(
-                await self._get_absolute_uri(), 
+            url = await remove_query_param(
+                await self.get_absolute_uri(), 
                 self.offset_query_param
             )
         else:
-            url = await self._replace_query_param(
-                await self._get_absolute_uri(), 
+            url = await replace_query_param(
+                await self.get_absolute_uri(), 
                 self.offset_query_param, 
                 self.offset - self.limit
             )
         if self.limit == self.default_limit:
-            url = await self._remove_query_param(url, self.limit_query_param)
+            url = await remove_query_param(url, self.limit_query_param)
         else:
-            url = await self._replace_query_param(url, self.limit_query_param, self.limit)
-        return await self._encode_url_parameters(url)
+            url = await replace_query_param(url, self.limit_query_param, self.limit)
+        return await self.encode_url_parameters(url)
     
     async def get_last_link(self):
-        url = await self._replace_query_param(
-            await self._get_absolute_uri(), 
+        url = await replace_query_param(
+            await self.get_absolute_uri(), 
             self.offset_query_param, 
             self.count // self.limit * self.limit
         )
         if self.limit == self.default_limit:
-            url = await self._remove_query_param(url, self.limit_query_param)
+            url = await remove_query_param(url, self.limit_query_param)
         else:
-            url = await self._replace_query_param(url, self.limit_query_param, self.limit)
-        return await self._encode_url_parameters(url)
+            url = await replace_query_param(url, self.limit_query_param, self.limit)
+        return await self.encode_url_parameters(url)
 
     async def get_limit(self, request):
         if self.limit_query_param:
             with suppress(KeyError, ValueError):
-                return await self._positive_int(
+                return await self.positive_int(
                     request.query_params[self.limit_query_param],
                     strict=True,
                     cutoff=self.max_limit
@@ -188,7 +179,7 @@ class LimitOffsetAsyncPagination:
 
     async def get_offset(self, request):
         try:
-            return await self._positive_int(
+            return await self.positive_int(
                 request.query_params[self.offset_query_param],
             )
         except (KeyError, ValueError):

@@ -25,22 +25,19 @@ class TestViewSet(ViewSet):
         objects = await self.pagination_class.paginate_queryset(
             self.queryset.order_by('id'), request=request
         )
-        objects = [university async for university in objects]
-        objects_length = len(objects)
-        if objects_length:
-            data = await TestSerializer(
-                objects, many=True, context={'request': request}, 
-                max_length=objects_length, min_length=objects_length
-            ).data
+        data = await TestSerializer(
+            objects, many=True, context={'request': request}
+        ).data
+        # TODO: write unit tests
+        serializer_field = await TestSerializer(objects, many=True)['attributes']
+        serializer_obj_representation = TestSerializer(objects, many=True).__repr__()
+        async for test in TestSerializer(objects, many=True):
+            assert type(test) == list and len(test) > 1
+        assert type(serializer_field) == list and len(serializer_field) > 1
+        assert type(serializer_obj_representation) == str and len(serializer_obj_representation) > 10
+        # print(serializer_obj_representation)
+        if data:
             response = await self.pagination_class.get_paginated_response(data)
-            # TODO: write unit tests
-            serializer_field = await TestSerializer(objects, many=True)['attributes']
-            serializer_obj_representation = TestSerializer(objects, many=True).__repr__()
-            async for test in TestSerializer(objects, many=True):
-                assert type(test) == list and len(test) > 1
-            assert type(serializer_field) == list and len(serializer_field) > 1
-            assert type(serializer_obj_representation) == str and len(serializer_obj_representation) > 10
-            # print(serializer_obj_representation)
         else:
             response = Response(status=404)
         return response
@@ -73,19 +70,17 @@ class UniversityViewSet(ViewSet):
                 "status": 400, "title": "Bad request",
                 "detail": f'Please enter a valid alpha-2 country code.'
             }]})
-        objects = self.queryset.filter(country__code2=alpha2.upper()).order_by('id')
         objects = await self.pagination_class.paginate_queryset(
-            objects, request=request
+            self.queryset.filter(
+                country__code2=alpha2.upper()
+            ).order_by('id'), request=request
         )
-        objects = [university async for university in objects]
-        objects_length = len(objects)
-        if objects_length:
-            startT = time.time()
-            data = await UniversitySerializer(
-                objects, many=True, context={'request': request},
-                max_length=objects_length, min_length=objects_length
-            ).data
-            print(f'function time: {time.time() - startT}ms')
+        startT = time.time()
+        data = await UniversitySerializer(
+            objects, many=True, context={'request': request}
+        ).data
+        print(f'function time: {time.time() - startT}ms')
+        if data:
             response = await self.pagination_class.get_paginated_response(data)
         else:
             response = Response(status=404, data={"errors": [{
