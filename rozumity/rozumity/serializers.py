@@ -482,22 +482,15 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
     async def to_representation(self, iterable):
         data = {'data': []}
         included = {}
-        async for obj in iterable:
+        async for instance in iterable:
             obj_data = await self.child.__class__(
-                obj, context={**self._context, 'is_included_disabled': True}
+                instance, context={**self._context, 'is_included_disabled': True}
             ).data
-            data['data'].append(*obj_data['data'])
-            rels = obj_data.get('data')[0].get('relationships')
-            if rels:
-                for rel in rels.keys():
-                    rel_field = getattr(obj, rel)
-                    view_name = rels[rel]['links'].pop('included')
-                    if hasattr(rel_field, 'all'):
-                        objects_list = [obj async for obj in rel_field.all()]
-                    else:
-                        objects_list = [rel_field]
-                    await self._included_helper(included, objects_list, view_name)
-                    
+            data['data'].append(obj_data['data'])
+            await self.child._get_included(
+                instance, obj_data.get('data').get('relationships'), 
+                included, self._context.get('is_included_disabled', False)
+            )
         if included:
             data['included'] = included.values()
             # Sort included
@@ -596,6 +589,19 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
     class Meta:
         list_serializer_class = JSONAPIManySerializer
     
+    async def _get_included(self, instance, rels, included, 
+                            is_included_disabled=False):
+        if not rels or is_included_disabled:
+            return
+        for rel in rels.keys():
+            rel_field = getattr(instance, rel)
+            view_name = rels[rel]['links'].pop('included')
+            if hasattr(rel_field, 'all'):
+                objects_list = [obj async for obj in rel_field.all()]
+            else:
+                objects_list = [rel_field]
+            await self._included_helper(included, objects_list, view_name)
+    
     async def to_internal_value(self, data):
         error_message = "The field must contain a valid object description."
         try:
@@ -636,22 +642,15 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
                 obj_map[key] = {}
         data = {name: await self.get_value(name, obj_map) for name in 
                 fields.keys() if name in obj_map and name != 'included'}
-        # TODO: REWRITE LIKE MANY SERIALIZER
-        included_all = []
-        rels = data.get('relationships')
-        if url and not self._context.get('is_included_disabled', False):
-            included = {}
-            for rel in rels.keys():
-                rel_field = getattr(instance, rel)
-                view_name = rels[rel]['links'].pop('included')
-                if hasattr(rel_field, 'all'):
-                    objects_list = [obj async for obj in rel_field.all()]
-                else:
-                    objects_list = [rel_field]
-                await self._included_helper(included, objects_list, view_name)
-            included_all = included.values()
-        return {'data': [{**data, 'links': {'self': url}}] 
-                if url else [{'data': [data]}], 'included': included_all}
+        included = {}
+        if url:
+            await self._get_included(
+                instance, data.get('relationships'), included,
+                self._context.get('is_included_disabled', False)
+            )
+            included = included.values()
+        return {'data': {**data, 'links': {'self': url}}
+                if url else [{'data': [data]}], 'included': list(included)}
 
     @property
     async def errors(self):

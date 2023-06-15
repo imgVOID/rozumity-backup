@@ -35,8 +35,7 @@ class LimitOffsetAsyncPagination:
         return ret
     
     async def get_absolute_uri(self):
-        request = self.request
-        return f'http://{await get_current_site(request)}{request.path}'
+        return await sync_to_async(self.request.build_absolute_uri)()
     
     async def paginate_queryset(self, queryset, request):
         self.request = request
