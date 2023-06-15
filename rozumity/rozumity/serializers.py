@@ -137,12 +137,19 @@ class JSONAPIBaseSerializer:
         if data is not None:
             self.initial_data = data
         self.initial = {}
+        self.url_field_name = 'links'
         self._kwargs = kwargs
         self._args = {}
-        self.required = kwargs.pop('required', True)
         self.partial = kwargs.pop('partial', False)
+        self.required = kwargs.pop('required', True)
+        #setattr(self, self.url_field_name, 
+        #        kwargs.pop(self.url_field_name, None))
         self._context = kwargs.pop('context', {})
         self._view_name = kwargs.pop('view_name', None)
+        request = self._context.get('request')
+        if request:
+            setattr(self, self.url_field_name, 
+                    f'http://{request.get_host()}{request.path}')
         kwargs.pop('many', None)
         super().__init__(**kwargs)
 
@@ -273,6 +280,38 @@ class JSONAPIBaseSerializer:
         if self._errors and raise_exception:
             raise ValidationError(self._errors)
         return not bool(self._errors)
+    
+    async def _included_helper(self, included, objects_list, view_name):
+        field_info = await get_field_info(objects_list[0])
+        for obj in objects_list:
+            data_included = {'type': obj.__class__.__name__.lower(), 'id': obj.id}
+            key = f"{data_included['type']}_{data_included['id']}"
+            if included.get(key):
+                continue
+            for attribute in field_info.get('fields').keys():
+                if not data_included.get('attributes'):
+                    data_included['attributes'] = {}
+                data_included['attributes'][attribute] = getattr(obj, attribute)
+            for relationship in field_info.get('forward_relations').keys():
+                if not data_included.get('relationships'):
+                    data_included['relationships'] = {}
+                objects_list = getattr(obj, relationship)
+                try:
+                    objects_list = [obj async for obj in objects_list.all()]
+                except (AttributeError, TypeError):
+                    objects_list = [objects_list]
+                if not objects_list:
+                    continue
+                objects_list = [await JSONAPITypeIdSerializer(obj).data 
+                                for obj in objects_list]
+                data_included['relationships'][relationship] = {
+                    'data': objects_list if len(objects_list) > 1 else objects_list.pop()
+                }
+            data_included['links'] = {'self': await reverse(
+                view_name, args=[data_included['id']],
+                request=self._context.get('request')
+            )}
+            included[key] = data_included
 
     async def _to_internal_value_helper(self, validation_coroutine, error_name, required):
         validated_value, errors = {}, {}
@@ -445,7 +484,7 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
         included = {}
         async for obj in iterable:
             obj_data = await self.child.__class__(
-                obj, context={**self._context, 'many': True}
+                obj, context={**self._context, 'is_included_disabled': True}
             ).data
             data['data'].append(*obj_data['data'])
             rels = obj_data.get('data')[0].get('relationships')
@@ -467,38 +506,6 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
             #    key=lambda x: (x['type'], x['id'])
             #)
         return data
-    
-    async def _included_helper(self, included, objects_list, view_name):
-        field_info = await get_field_info(objects_list[0])
-        for obj in objects_list:
-            data_included = {'type': obj.__class__.__name__.lower(), 'id': obj.id}
-            key = f"{data_included['type']}_{data_included['id']}"
-            if included.get(key):
-                continue
-            for attribute in field_info.get('fields').keys():
-                if not data_included.get('attributes'):
-                    data_included['attributes'] = {}
-                data_included['attributes'][attribute] = getattr(obj, attribute)
-            for relationship in field_info.get('forward_relations').keys():
-                if not data_included.get('relationships'):
-                    data_included['relationships'] = {}
-                objects_list = getattr(obj, relationship)
-                try:
-                    objects_list = [obj async for obj in objects_list.all()]
-                except (AttributeError, TypeError):
-                    objects_list = [objects_list]
-                if not objects_list:
-                    continue
-                objects_list = [await JSONAPITypeIdSerializer(obj).data 
-                                for obj in objects_list]
-                data_included['relationships'][relationship] = {
-                    'data': objects_list if len(objects_list) > 1 else objects_list.pop()
-                }
-            data_included['links'] = {'self': await reverse(
-                view_name, args=[data_included['id']],
-                request=self._context.get('request')
-            )}
-            included[key] = data_included
 
 
 class JSONAPITypeIdSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
@@ -552,10 +559,7 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
         data = {name: await self.get_value(
             name, {key: getattr(instance, key) for key in fields.keys()}
         ) for name in fields.keys()}
-        parent_id = str(self._context.get("parent_id"))
-        source = self.source
-        if source is not None and not source.endswith(parent_id + '/'):
-            source = f"{source}{parent_id}/"
+        url = getattr(self, self.url_field_name, None)
         value = []
         for key, val in data.items():
             if hasattr(val, 'all'):
@@ -566,16 +570,16 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
                 data_included = {'type': obj.__class__.__name__.lower(), 'id': obj.id}
                 value.append(data_included)
             data[key] = {'data': value.pop() if len(value) == 1 else value}
-            if self.source:
-                data[key]['links'] = {
-                    'self': f"{source}relationships/{key}/",
-                    'related': f"{source}{key}/"
+            if url:
+                data[key][self.url_field_name] = {
+                    'self': f"{url}relationships/{key}/",
+                    'related': f"{url}{key}/"
                 }
                 field = fields[key]
                 if hasattr(field, 'child'):
                     field, field._view_name = field.child, field.child._view_name
                 if field._view_name:
-                    data[key]['links']['included'] = field._view_name
+                    data[key][self.url_field_name]['included'] = field._view_name
         return data
 
 # TODO: SERIALIZE A LIST OF INTEGERS IN THE ATTRIBUTES SECTION
@@ -591,12 +595,6 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
     
     class Meta:
         list_serializer_class = JSONAPIManySerializer
-    
-    def __init__(self, instance=None, data=None, **kwargs):
-        super().__init__(instance, data, **kwargs)
-        request = self._context.get('request')
-        if request:
-            self.source = f'http://{request.get_host()}{request.path}'
     
     async def to_internal_value(self, data):
         error_message = "The field must contain a valid object description."
@@ -620,11 +618,14 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
         serializer_map = {
             'attributes': fields['attributes'].__class__(instance),
             'relationships': fields['relationships'].__class__(
-                instance, context={**self._context, 'parent_id': obj_map['id']}
+                instance, context={**self._context}
             )
         }
-        source = self.source
-        serializer_map['relationships'].source = source
+        url = getattr(self, self.url_field_name, None)
+        parent_id = str(obj_map['id'])
+        if url and not url.endswith(parent_id + '/'):
+            url = f"{url}{parent_id}/"
+        setattr(serializer_map['relationships'], self.url_field_name, url)
         for key, val in serializer_map.items():
             if len(val._declared_fields):
                 try:
@@ -634,16 +635,23 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
             else:
                 obj_map[key] = {}
         data = {name: await self.get_value(name, obj_map) for name in 
-               fields.keys() if name in obj_map and name != 'included'}
+                fields.keys() if name in obj_map and name != 'included'}
         # TODO: REWRITE LIKE MANY SERIALIZER
-        included = data['relationships'].pop('included', [])
-        if self.source and not self._context.get('many', None):
-            for data in included:
-                data['links'] = {'self': await reverse(
-                    *data['links'], request=self._context.get('request')
-                )}
-        return {'data': [{**data, 'links': {'self': f'{source}{obj_map.get("id")}/'}}] 
-                if source else [{'data': [data]}], 'included': included}
+        included_all = []
+        rels = data.get('relationships')
+        if url and not self._context.get('is_included_disabled', False):
+            included = {}
+            for rel in rels.keys():
+                rel_field = getattr(instance, rel)
+                view_name = rels[rel]['links'].pop('included')
+                if hasattr(rel_field, 'all'):
+                    objects_list = [obj async for obj in rel_field.all()]
+                else:
+                    objects_list = [rel_field]
+                await self._included_helper(included, objects_list, view_name)
+            included_all = included.values()
+        return {'data': [{**data, 'links': {'self': url}}] 
+                if url else [{'data': [data]}], 'included': included_all}
 
     @property
     async def errors(self):
@@ -661,8 +669,9 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
         error_details = []
         for key, val in errors.items():
             error_detail = {'code': 403}
-            if self.source:
-                error_detail['source'] = {'pointer': self.source}
+            url = getattr(self, self.url_field_name, None)
+            if url:
+                error_detail['source'] = {'pointer': url}
             error_detail['detail'] = (f"The JSON field '{key}' caused an "
                                       f"exception: {val[0].lower()}")
             error_details.append(error_detail)

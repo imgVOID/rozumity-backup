@@ -65,13 +65,10 @@ class LimitOffsetAsyncPagination:
             links['prev'] = prev
         if last != links['self']:
             links['last'] = last
-        links = {'links': links}
         try:
-            links = {**links, **data}
+            return Response({'links': links, **data}, status=200)
         except TypeError:
             raise TypeError('Serializer data must be a valid dictionary.')
-        else:
-            return Response(links, status=200)
 
     async def get_paginated_response_schema(self, schema=None):
         schema = schema if schema else {

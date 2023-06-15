@@ -18,8 +18,19 @@ class TestViewSet(ViewSet):
     authentication_classes = [SessionAuthentication]
     pagination_class = LimitOffsetAsyncPagination
     queryset = Test.objects.prefetch_related('country').select_related(
-        'city__subregion', 'city__region', 'city__country'
+        'city', 'city__subregion', 'city__region', 'city__country'
     )
+    
+    async def retrieve(self, request, pk):
+        objects = await self.queryset.aget(id=pk)
+        data = await TestSerializer(
+            objects, context={'request': request}
+        ).data
+        if data:
+            response = Response(data, status=200)
+        else:
+            response = Response(status=404)
+        return response
     
     async def list(self, request):
         objects = await self.pagination_class.paginate_queryset(
@@ -63,6 +74,17 @@ class UniversityViewSet(ViewSet):
     authentication_classes = [SessionAuthentication]
     pagination_class = LimitOffsetAsyncPagination
     queryset = University.objects.select_related('country')
+    
+    async def retrieve(self, request, alpha2, pk):
+        objects = await self.queryset.aget(id=pk)
+        data = await UniversitySerializer(
+            objects, context={'request': request}
+        ).data
+        if data:
+            response = Response(data, status=200)
+        else:
+            response = Response(status=404)
+        return response
     
     async def list(self, request, alpha2):
         if len(alpha2) != 2:
