@@ -199,7 +199,7 @@ class JSONAPIBaseSerializer:
             return NestedBoundField(field, data, error, key)
         else:
             data = await self.__class__(self.instance).data
-            value = data['data'][0].get(key)
+            value = data['data'].get(key)
             error = self._errors.get(key) if hasattr(self, '_errors') else None
             return BoundField(field, value, error, key)
     
@@ -239,13 +239,11 @@ class JSONAPIBaseSerializer:
             return
         for key in keys:
             if key not in dictionary:
-                dictionary[key] = {}
-            if len(value) > 1:
-                if dictionary[key].get('data') is None:
-                    dictionary[key]['data'] = []
+                dictionary[key] = {'data': keys[key]}
+            if type(dictionary[key]['data']) == list:
                 dictionary[key]['data'].append(value)
             else:
-                dictionary[key] = {'data': value}
+                dictionary[key] = value
     
     @property
     async def fields(self):
@@ -281,60 +279,6 @@ class JSONAPIBaseSerializer:
             raise ValidationError(self._errors)
         return not bool(self._errors)
     
-    async def _included_helper(self, included, objects_list, view_name):
-        field_info = await get_field_info(objects_list[0])
-        for obj in objects_list:
-            data_included = {'type': obj.__class__.__name__.lower(), 'id': obj.id}
-            key = f"{data_included['type']}_{data_included['id']}"
-            if included.get(key):
-                continue
-            for attribute in field_info.get('fields').keys():
-                if not data_included.get('attributes'):
-                    data_included['attributes'] = {}
-                data_included['attributes'][attribute] = getattr(obj, attribute)
-            for relationship in field_info.get('forward_relations').keys():
-                if not data_included.get('relationships'):
-                    data_included['relationships'] = {}
-                objects_list = getattr(obj, relationship)
-                try:
-                    objects_list = [obj async for obj in objects_list.all()]
-                except (AttributeError, TypeError):
-                    objects_list = [objects_list]
-                if not objects_list:
-                    continue
-                objects_list = [await JSONAPITypeIdSerializer(obj).data 
-                                for obj in objects_list]
-                data_included['relationships'][relationship] = {
-                    'data': objects_list if len(objects_list) > 1 else objects_list.pop()
-                }
-            data_included['links'] = {'self': await reverse(
-                view_name, args=[data_included['id']],
-                request=self._context.get('request')
-            )}
-            included[key] = data_included
-
-    async def _to_internal_value_helper(self, validation_coroutine, error_name, required):
-        validated_value, errors = {}, {}
-        try:
-            validated_value = await validation_coroutine
-        except ValidationError as exc:
-            detail = exc.detail
-            if type(detail) == dict:
-                for key, val in detail.items():
-                    errors[f'{error_name}.{key}'] = val
-            else:
-                errors[error_name] = detail
-        except DjangoValidationError as exc:
-            errors[error_name] = get_error_detail(exc)
-        except AttributeError as exc:
-            if required:
-                errors[error_name] = ValidationError(
-                    'This field may not be null.'
-                ).detail
-        except SkipField:
-            pass
-        return validated_value, errors
-    
     @staticmethod
     async def _to_coroutine(function):
         if not iscoroutinefunction(function):
@@ -346,15 +290,39 @@ class JSONAPIBaseSerializer:
         errors = {}
         fields = await self.fields
         for name, field in fields.items():
+            if hasattr(field, 'child'):
+                field.child.required, field = field.required, field.child
+            value = await self.get_value(name, data)
+            value = value.pop('data', value) if type(value) in [dict, list] else value
+            value = [value] if type(value) != list else value
             run_validation = await self._to_coroutine(field.run_validation)
-            
-            validated_value, errors_field = await self._to_internal_value_helper(
-                run_validation(await self.get_value(name, data)), 
-                name, field.required
-            )
-            if not errors_field:
-                await self.set_value(ret, {}, {name: validated_value})
-            else:
+            for obj in value:
+                error_name, required, errors_field = name, field.required, {}
+                if hasattr(field, '_validated_data'):
+                    del field._validated_data
+                try:
+                    validated_value = await run_validation(obj)
+                except ValidationError as exc:
+                    detail = exc.detail
+                    if type(detail) == dict:
+                        for key, val in detail.items():
+                            errors_field[f'{error_name}.{key}'] = val
+                    else:
+                        errors_field[error_name] = detail
+                except DjangoValidationError as exc:
+                    errors_field[error_name] = get_error_detail(exc)
+                except AttributeError as exc:
+                    if required:
+                        errors_field[error_name] = ValidationError(
+                            'This field may not be null.'
+                        ).detail
+                except SkipField:
+                    pass
+                else:
+                    # TODO: rewrite without key value, set value after the obj cycle, add data to foreign keys
+                    await self.set_value(
+                        ret, {name: {} if len(value) < 2 else []}, validated_value
+                    )
                 errors.update(errors_field)
         if errors:
             raise ValidationError(errors)
@@ -522,31 +490,6 @@ class JSONAPIAttributesSerializer(JSONAPIBaseSerializer, metaclass=SerializerMet
 
 
 class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
-    # TODO: REWRITE WITH BASE CLASS METHOD
-    async def to_internal_value(self, data):
-        ret = {}
-        errors = {}
-        fields = await self.fields
-        for name, field in fields.items():
-            if hasattr(field, 'child'):
-                field.child.required, field = field.required, field.child
-            value = await self.get_value(name, data)
-            value = value.pop('data', value) if type(value) == dict else value
-            value = [value] if type(value) != list else value
-            run_validation = await self._to_coroutine(field.run_validation)
-            for obj in value:
-                validated_value, errors_field = await self._to_internal_value_helper(
-                    run_validation(obj), f'{name}.data', field.required
-                )
-                if not errors_field:
-                    await self.set_value(ret, {name: None}, validated_value)
-                else:
-                    errors.update(errors_field)
-        if errors:
-            raise ValidationError(errors)
-        else:
-            return ret
-    
     async def to_representation(self, instance):
         fields = await self.fields
         data = {name: await self.get_value(
@@ -600,7 +543,36 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
                 objects_list = [obj async for obj in rel_field.all()]
             else:
                 objects_list = [rel_field]
-            await self._included_helper(included, objects_list, view_name)
+            field_info = await get_field_info(objects_list[0])
+            for obj in objects_list:
+                data_included = {'type': obj.__class__.__name__.lower(), 'id': obj.id}
+                key = "_".join(str(data_included.values()))
+                if included.get(key):
+                    continue
+                for attribute in field_info.get('fields').keys():
+                    if not data_included.get('attributes'):
+                        data_included['attributes'] = {}
+                    data_included['attributes'][attribute] = getattr(obj, attribute)
+                for relationship in field_info.get('forward_relations').keys():
+                    if not data_included.get('relationships'):
+                        data_included['relationships'] = {}
+                    objects_list = getattr(obj, relationship)
+                    try:
+                        objects_list = [obj async for obj in objects_list.all()]
+                    except (AttributeError, TypeError):
+                        objects_list = [objects_list]
+                    if not objects_list:
+                        continue
+                    objects_list = [await JSONAPITypeIdSerializer(obj).data 
+                                    for obj in objects_list]
+                    data_included['relationships'][relationship] = {
+                        'data': objects_list if len(objects_list) > 1 else objects_list.pop()
+                    }
+                data_included['links'] = {'self': await reverse(
+                    view_name, args=[data_included['id']],
+                    request=self._context.get('request')
+                )}
+                included[key] = data_included
     
     async def to_internal_value(self, data):
         error_message = "The field must contain a valid object description."
@@ -648,9 +620,11 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
                 instance, data.get('relationships'), included,
                 self._context.get('is_included_disabled', False)
             )
-            included = included.values()
-        return {'data': {**data, 'links': {'self': url}}
-                if url else [{'data': [data]}], 'included': list(included)}
+            data['links'] = {'self': url}
+        data = {'data': data}
+        if included:
+            data['included'] = list(included.values())
+        return data
 
     @property
     async def errors(self):
