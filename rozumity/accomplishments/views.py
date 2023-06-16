@@ -55,11 +55,13 @@ class TestViewSet(ViewSet):
     
     async def create(self, request):
         startT = time.time()
+        data = request.data
+        is_many = True if 'data' in data.keys() and type(data['data']) == list else False
         serializer_full = TestSerializer(
-            data=request.data, many=False, context={'request': request}
+            data=data, many=is_many, context={'request': request}
         )
         if await serializer_full.is_valid():
-            response_data = await serializer_full.data
+            response_data = await serializer_full.validated_data
             status = 200
         else:
             response_data = await serializer_full.errors
@@ -68,7 +70,6 @@ class TestViewSet(ViewSet):
         return Response(data=response_data, status=status)
 
 
-# TODO: retrieve
 class UniversityViewSet(ViewSet):
     permission_classes=[UniversityPermission]
     authentication_classes = [SessionAuthentication]
