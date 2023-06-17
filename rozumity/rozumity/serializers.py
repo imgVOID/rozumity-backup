@@ -26,16 +26,11 @@ async def get_field_info(obj):
     return {'fields': fields, 'forward_relations': forward_relations}
 
 
-
 class JSONAPISerializerRepr:
     def __init__(self, serializer, indent=1, force_many=None):
         self._serializer = serializer
         self._indent = indent
         self._force_many = force_many
-    
-    @staticmethod
-    def _has_declared_fields(field):
-        return hasattr(field, '_declared_fields')
     
     @staticmethod
     def _has_child(field):
@@ -80,16 +75,16 @@ class JSONAPISerializerRepr:
         for field_name, field in fields.items():
             ret += '\n' + indent_str + field_name + ' = '
             required_string = '' if field.required else f'required={field.required}'
-            if self._has_declared_fields(field):
+            if hasattr(field, '_declared_fields'):
                 ret += self.__class__(field, indent + 1).__repr__().replace(
                     '()', f"({required_string})"
                 )
             elif self._has_child(field):
                 child = field.child
-                if self._has_declared_fields(child):
-                    ret += '{}({}child={}'.format(
+                if hasattr(child, '_declared_fields'):
+                    ret += '{}({}child={})'.format(
                         field.__class__.__name__, required_string + ', ',
-                        self.__class__(child, indent + 1).__repr__().replace('()', '())'),
+                        self.__class__(child, indent + 1).__repr__(),
                     )
                 else:
                     ret += self._field_repr(child)
@@ -97,9 +92,6 @@ class JSONAPISerializerRepr:
                 ret += self._field_repr(field.child_relation, force_many=field.child_relation)
             else:
                 ret += self._field_repr(field)
-        if getattr(serializer, 'validators', None):
-            ret += '\n' + indent_str + 'class Meta:'
-            ret += '\n' + indent_str + '    validators = ' + self._smart_repr(serializer.validators)
         return ret
 
 
@@ -113,17 +105,6 @@ class NotSelectedForeignKey(ImproperlyConfigured):
         super().__init__(self.message)
 
 
-class ValidateFieldType:
-    def __init__(self, python_type):
-        self.type = python_type
-
-    def __call__(self, value):
-        if type(value) != self.type:
-            message = f"The value {value} is wrong type."
-            raise serializers.ValidationError(message)
-
-
-# TODO: rewrite the 'type' creation, it must be snake_case, obj.__class__.__name__
 # TODO: write an JSONAPI object describing the server’s implementation (version)
 class JSONAPIBaseSerializer:
     _creation_counter = 0
@@ -131,13 +112,15 @@ class JSONAPIBaseSerializer:
     initial = None
     field_name = ''
     
-    def __init__(self, instance=None, data=None, **kwargs):
+    def __init__(self, instance=None, data=None, 
+                 read_only=False, **kwargs):
         if data is not None:
             self.initial_data = data
         validators = list(kwargs.pop('validators', []))
         if validators:
             self.validators = validators
         self.instance = instance
+        self.read_only = read_only
         self.initial = {}
         self.url_field_name = 'links'
         self._kwargs = kwargs
@@ -330,10 +313,14 @@ class JSONAPIBaseSerializer:
         return function
     
     async def to_internal_value(self, data):
+        meta = getattr(self, 'Meta', None)
+        meta = getattr(meta, 'read_only_fields', [])
         ret = {}
         errors = {}
         fields = await self.fields
         for name, field in fields.items():
+            if field.read_only or name in meta:
+                continue
             if hasattr(field, 'child'):
                 field.child.required, field = field.required, field.child
             value = await self.get_value(name, data)
@@ -377,21 +364,24 @@ class JSONAPIBaseSerializer:
             return ret
     
     async def to_representation(self, instance):
-        raise NotImplemented(
-            'Method JSONAPIBaseSerializer.to_representation'
-            '(self, instance) is not implemented'
-        )
+        fields = await self.fields
+        instance_map = {key: getattr(instance, key) for key in fields.keys()}
+        return {name: await self.get_value(name, instance_map) 
+                for name in fields.keys()}
+
+    @property
+    async def _readable_fields(self):
+        fields = await self.fields
+        for field in fields.values():
+            if not field.read_only:
+                yield field
     
     @property
     async def validators(self):
         if not hasattr(self, '_validators'):
             self._validators = await self.get_validators()
         return self._validators
-
-    @validators.setter
-    async def validators(self, validators):
-        self._validators = validators
-
+    
     @property
     async def data(self):
         if hasattr(self, 'initial_data') and not hasattr(self, '_validated_data'):
@@ -480,11 +470,7 @@ class JSONAPITypeIdSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetacla
 
 
 class JSONAPIAttributesSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
-    async def to_representation(self, instance):
-        fields = await self.fields
-        instance_map = {key: getattr(instance, key) for key in fields.keys()}
-        return {name: await self.get_value(name, instance_map) 
-                for name in fields.keys()}
+    pass
 
 
 class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
@@ -499,7 +485,7 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
             if hasattr(val, 'all'):
                 objects_list = [obj async for obj in val.all()]
             else:
-                objects_list = [val]
+                objects_list = [val] if val else []
             for obj in objects_list:
                 data_included = {'type': obj.__class__.__name__.lower(), 'id': obj.id}
                 value.append(data_included)
@@ -601,6 +587,29 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
     
     @property
     async def errors(self):
+        return await self.child.__class__._format_errors(self)
+
+
+# TODO: SERIALIZE A LIST OF INTEGERS IN THE ATTRIBUTES SECTION
+class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
+    class Type(JSONAPITypeIdSerializer):
+        pass
+    
+    class Attributes(JSONAPIAttributesSerializer):
+        pass
+    
+    class Relationships(JSONAPIRelationsSerializer):
+        pass
+    
+    class Meta:
+        list_serializer_class = JSONAPIManySerializer
+        read_only_fields = ('id')
+    
+    @property
+    async def errors(self):
+        return await self._format_errors()
+    
+    async def _format_errors(self):
         if not hasattr(self, '_errors'):
             msg = 'You must call `.is_valid()` before accessing `.errors`.'
             raise AssertionError(msg)
@@ -622,23 +631,6 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
                                       f"exception: {val[0].lower()}")
             error_details.append(error_detail)
         return {"jsonapi": { "version": "1.1" }, 'errors': error_details}
-
-    
-
-
-# TODO: SERIALIZE A LIST OF INTEGERS IN THE ATTRIBUTES SECTION
-class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
-    class Type(JSONAPITypeIdSerializer):
-        pass
-    
-    class Attributes(JSONAPIAttributesSerializer):
-        pass
-    
-    class Relationships(JSONAPIRelationsSerializer):
-        pass
-    
-    class Meta:
-        list_serializer_class = JSONAPIManySerializer
     
     async def _get_included(self, instance, rels, included, 
                             is_included_disabled=False):
@@ -732,35 +724,12 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
             data['included'] = list(included.values())
         return data
 
-    @property
-    async def errors(self):
-        if not hasattr(self, '_errors'):
-            msg = 'You must call `.is_valid()` before accessing `.errors`.'
-            raise AssertionError(msg)
-        errors = {}
-        for key, val in self._errors.items():
-            if type(val) == dict:
-                errors.update(val)
-            else:
-                errors[key] = val
-        if not errors:
-            return None
-        error_details = []
-        for key, val in errors.items():
-            error_detail = {'code': 403}
-            url = getattr(self, self.url_field_name, None)
-            if url:
-                error_detail['source'] = {'pointer': url}
-            error_detail['detail'] = (f"The JSON field '{key}' caused an "
-                                      f"exception: {val[0].lower()}")
-            error_details.append(error_detail)
-        return {"jsonapi": { "version": "1.1" }, 'errors': error_details}
-
     async def validate_type(self, value):
-        value = ''.join(value.split('_'))
-        obj_type = str(getattr(self.Meta, 'model_type', None))
-        if not obj_type:
-            obj_type = getattr(self.Meta, 'model', None).__name__.lower()
+        obj_type = getattr(self.Meta, 'model_type', None)
+        if obj_type is None:
+            obj_type = getattr(self.Meta, 'model', '')
+            obj_type = obj_type.__name__.lower() if obj_type else ''
+            value = ''.join(value.split('_'))
         if not value or value != obj_type:
             raise serializers.ValidationError("Incorrect object type.")
         return value

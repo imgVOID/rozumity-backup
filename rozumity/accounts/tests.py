@@ -1,3 +1,4 @@
+# python manage.py test
 # python ../manage.py test accounts
 from django.test import TestCase
 from django.contrib.auth import get_user_model

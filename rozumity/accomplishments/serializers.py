@@ -30,8 +30,8 @@ class TestSerializer(JSONAPISerializer):
         ))
     
     class Meta:
-        model = Test
         model_type = 'test'
+        #model = Test
         #validators = {
         #    'id': MaxValueValidator(0),
         #    'attributes.title': MaxLengthValidator(0),
