@@ -128,7 +128,7 @@ class JSONAPIBaseSerializer:
         self.partial = kwargs.pop('partial', False)
         self.required = kwargs.pop('required', True)
         self._context = kwargs.pop('context', {})
-        self._view_name = kwargs.pop('view_name', None)
+        self.view_name = kwargs.pop('view_name', None)
         request = self._context.get('request')
         if request:
             setattr(self, self.url_field_name, 
@@ -188,7 +188,10 @@ class JSONAPIBaseSerializer:
             return NestedBoundField(field, data, error, key)
         else:
             data = await self.__class__(self.instance).data
-            value = data['data'].get(key)
+            try:
+                value = data['data'].get(key)
+            except KeyError:
+                value = data.get(key)
             error = self._errors.get(key) if hasattr(self, '_errors') else None
             return BoundField(field, value, error, key)
     
@@ -497,9 +500,9 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
                 }
                 field = fields[key]
                 if hasattr(field, 'child'):
-                    field, field._view_name = field.child, field.child._view_name
-                if field._view_name:
-                    data[key][self.url_field_name]['included'] = field._view_name
+                    field, field.view_name = field.child, field.child.view_name
+                if field.view_name:
+                    data[key][self.url_field_name]['included'] = field.view_name
         return data
 
 
