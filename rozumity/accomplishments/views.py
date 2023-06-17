@@ -1,8 +1,12 @@
 import time
 from django.core.exceptions import ObjectDoesNotExist
+from django.http.response import HttpResponseRedirect
 from rest_framework.response import Response
 from rest_framework.authentication import SessionAuthentication
+from rest_framework.decorators import action
+from rest_framework.reverse import reverse
 from adrf.viewsets import ViewSet
+from asgiref.sync import sync_to_async
 from aiofiles import open
 
 from cities_light.models import Country
@@ -11,6 +15,8 @@ from rozumity.paginations import LimitOffsetAsyncPagination
 from .models import University, Test
 from .permissions import UniversityPermission
 from .serializers import UniversitySerializer, TestSerializer
+
+reverse = sync_to_async(reverse)
 
 
 class TestViewSet(ViewSet):
@@ -68,6 +74,29 @@ class TestViewSet(ViewSet):
             status = 403
         print(f'function time: {time.time() - startT}ms')
         return Response(data=response_data, status=status)
+    
+    @action(methods=["get"], detail=False, url_path=r'(?P<pk>\d+)/(?P<type>\w+)', url_name="related")
+    async def related(self, request, *args, **kwargs):
+        object = await self.queryset.aget(id=kwargs['pk'])
+        field = TestSerializer.Relationships._declared_fields[kwargs['type']]
+        if not hasattr(field, 'child'):
+            return HttpResponseRedirect(await reverse(field.view_name, args=[getattr(object, kwargs['type']).id], request=request))
+        else:
+            # TODO: create the list view filtration
+            raise NotImplementedError('The many-to-many functionality is not implemented')
+    
+    @action(methods=["get"], detail=False, url_path=r'(?P<pk>\d+)/relationships/(?P<type>\w+)', url_name="self")
+    async def self(self, request, *args, **kwargs):
+        object = await self.queryset.aget(id=kwargs['pk'])
+        field = getattr(object, kwargs['type'])
+        if hasattr(field, 'all'):
+            data = []
+            async for obj in field.all():
+                data.append(await TestSerializer.Type(obj).data)
+        else:
+            data = await TestSerializer.Type(field).data
+        return Response(data={'data': data}, status=200)
+    
 
 
 class UniversityViewSet(ViewSet):
@@ -76,7 +105,7 @@ class UniversityViewSet(ViewSet):
     pagination_class = LimitOffsetAsyncPagination
     queryset = University.objects.select_related('country')
     
-    async def retrieve(self, request, alpha2, pk):
+    async def retrieve(self, request, pk):
         objects = await self.queryset.aget(id=pk)
         data = await UniversitySerializer(
             objects, context={'request': request}
@@ -87,16 +116,9 @@ class UniversityViewSet(ViewSet):
             response = Response(status=404)
         return response
     
-    async def list(self, request, alpha2):
-        if len(alpha2) != 2:
-            return Response(status=404, data={"errors": [{
-                "status": 400, "title": "Bad request",
-                "detail": f'Please enter a valid alpha-2 country code.'
-            }]})
+    async def list(self, request):
         objects = await self.pagination_class.paginate_queryset(
-            self.queryset.filter(
-                country__code2=alpha2.upper()
-            ).order_by('id'), request=request
+            self.queryset.order_by('id'), request=request
         )
         startT = time.time()
         data = await UniversitySerializer(
@@ -108,8 +130,7 @@ class UniversityViewSet(ViewSet):
         else:
             response = Response(status=404, data={"errors": [{
                 "status": 404, "title": "Not Found",
-                "detail": 'There are no universities for Sorry, '
-                f'but the country with alpha2 code {alpha2.upper()} is not supported.'
+                "detail": 'There are no universities.'
             }]})
         return response
     
