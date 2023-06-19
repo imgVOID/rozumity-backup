@@ -10,6 +10,6 @@ router_test.register(r"", views.TestViewSet, basename="test")
 
 
 urlpatterns = [
-    path("universities/<slug:alpha2>/", include((router.urls, 'universities')), name='universities'),
+    path("universities/", include((router.urls, 'universities')), name='universities'),
     path("test/", include((router_test.urls, 'test')), name='test')
 ]

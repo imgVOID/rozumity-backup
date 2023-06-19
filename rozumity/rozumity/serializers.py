@@ -428,7 +428,7 @@ class JSONAPIBaseSerializer:
 class SerializerMetaclass(type):
     @classmethod
     def _get_declared_fields(cls, bases, attrs):
-        obj_info = attrs.get('Type', None)
+        obj_info = attrs.get('ObjectId', None)
         if issubclass(obj_info.__class__, cls):
             attrs.update(obj_info._declared_fields)
         fields = {name: attrs.get(name, None) for name 
@@ -460,7 +460,7 @@ class SerializerMetaclass(type):
         return super().__new__(cls, name, bases, attrs)
 
 
-class JSONAPITypeIdSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
+class JSONAPIObjectIdSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
     type = serializers.CharField()
     id = serializers.IntegerField()
     
@@ -476,6 +476,7 @@ class JSONAPIAttributesSerializer(JSONAPIBaseSerializer, metaclass=SerializerMet
     pass
 
 
+# TODO: create the ModelSerializer-like functionality with own coroutine
 class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
     async def to_representation(self, instance):
         fields = await self.fields
@@ -483,24 +484,19 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
             name, {key: getattr(instance, key) for key in fields.keys()}
         ) for name in fields.keys()}
         url = getattr(self, self.url_field_name, None)
-        value = []
         for key, val in data.items():
+            field = fields[key]
             if hasattr(val, 'all'):
-                objects_list = [obj async for obj in val.all()]
+                data[key] = {'data': [await JSONAPIObjectIdSerializer(obj).data
+                                      async for obj in await sync_to_async(val.all)()]}
+                field, field.view_name = fields[key].child, fields[key].child.view_name
             else:
-                objects_list = [val] if val else []
-            for obj in objects_list:
-                data_included = {'type': obj.__class__.__name__.lower(), 'id': obj.id}
-                value.append(data_included)
-            data[key] = {'data': value.pop() if len(value) == 1 else value}
+                data[key] = {'data': await JSONAPIObjectIdSerializer(val).data}
             if url:
                 data[key][self.url_field_name] = {
                     'self': f"{url}relationships/{key}/",
                     'related': f"{url}{key}/"
                 }
-                field = fields[key]
-                if hasattr(field, 'child'):
-                    field, field.view_name = field.child, field.child.view_name
                 if field.view_name:
                     data[key][self.url_field_name]['included'] = field.view_name
         return data
@@ -568,25 +564,22 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
         return validated_data
     
     async def to_representation(self, iterable):
-        data = {'data': []}
-        included = {}
+        data, included = [], {}
         async for instance in iterable:
             obj_data = await self.child.__class__(
                 instance, context={**self._context, 'is_included_disabled': True}
             ).data
-            data['data'].append(obj_data['data'])
+            data.append(obj_data['data'])
             await self.child._get_included(
                 instance, obj_data.get('data').get('relationships'), 
                 included, self._context.get('is_included_disabled', False)
             )
-        if included:
-            data['included'] = included.values()
-            # Sort included
-            # data['included'] = sorted(
-            #    list(included.values()), 
-            #    key=lambda x: (x['type'], x['id'])
-            #)
-        return data
+        # Sort included
+        # data['included'] = sorted(
+        #    list(included.values()), 
+        #    key=lambda x: (x['type'], x['id'])
+        #)
+        return {'data': data, 'included': list(included.values())}
     
     @property
     async def errors(self):
@@ -595,7 +588,7 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
 
 # TODO: SERIALIZE A LIST OF INTEGERS IN THE ATTRIBUTES SECTION
 class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
-    class Type(JSONAPITypeIdSerializer):
+    class ObjectId(JSONAPIObjectIdSerializer):
         pass
     
     class Attributes(JSONAPIAttributesSerializer):
@@ -643,7 +636,7 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
             rel_field = getattr(instance, rel)
             view_name = rels[rel]['links'].pop('included')
             if hasattr(rel_field, 'all'):
-                objects_list = [obj async for obj in rel_field.all()]
+                objects_list = [obj async for obj in await sync_to_async(rel_field.all)()]
             else:
                 objects_list = [rel_field]
             field_info = await get_field_info(objects_list[0])
@@ -653,6 +646,8 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
                 if included.get(key):
                     continue
                 for attribute in field_info.get('fields').keys():
+                    if attribute == 'id':
+                        continue
                     if not data_included.get('attributes'):
                         data_included['attributes'] = {}
                     data_included['attributes'][attribute] = getattr(obj, attribute)
@@ -661,12 +656,12 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
                         data_included['relationships'] = {}
                     objects_list = getattr(obj, relationship)
                     try:
-                        objects_list = [obj async for obj in objects_list.all()]
+                        objects_list = [obj async for obj in await sync_to_async(objects_list.all)()]
                     except (AttributeError, TypeError):
                         objects_list = [objects_list]
                     if not objects_list:
                         continue
-                    objects_list = [await JSONAPITypeIdSerializer(obj).data 
+                    objects_list = [await JSONAPIObjectIdSerializer(obj).data 
                                     for obj in objects_list]
                     data_included['relationships'][relationship] = {
                         'data': objects_list if len(objects_list) > 1 else objects_list.pop()
@@ -693,7 +688,6 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
     
     async def to_representation(self, instance):
         fields = await self.fields
-        obj_map = {**await self.Type(instance).data}
         serializer_map = {
             'attributes': fields['attributes'].__class__(instance),
             'relationships': fields['relationships'].__class__(
@@ -701,6 +695,7 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
             )
         }
         url = getattr(self, self.url_field_name, None)
+        obj_map = await self.ObjectId(instance).data
         parent_id = str(obj_map['id'])
         if url and not url.endswith(parent_id + '/'):
             url = f"{url}{parent_id}/"
@@ -722,9 +717,9 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
                 self._context.get('is_included_disabled', False)
             )
             data['links'] = {'self': url}
-        data = {'data': data}
+        data = {'data': data, 'included': []}
         if included:
-            data['included'] = list(included.values())
+            data['included'].extend(included.values())
         return data
 
     async def validate_type(self, value):

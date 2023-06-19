@@ -45,7 +45,7 @@ class LimitOffsetAsyncPagination:
         self.count = await self.get_count(queryset)
         self.offset = await self.get_offset(request)
         if self.count == 0 or self.offset > self.count:
-            return []
+            return await sync_to_async(queryset.model.objects.none)()
         queryset = queryset[self.offset:self.offset + self.limit]
         return queryset
 
@@ -65,7 +65,7 @@ class LimitOffsetAsyncPagination:
         if last != links['self']:
             links['last'] = last
         try:
-            return Response({'links': links, **data}, status=200)
+            return Response({'links': links, **data})
         except TypeError:
             raise TypeError('Serializer data must be a valid dictionary.')
 

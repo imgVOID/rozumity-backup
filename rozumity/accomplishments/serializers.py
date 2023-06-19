@@ -10,7 +10,7 @@ class UniversitySerializer(JSONAPISerializer):
         title = serializers.CharField(max_length=128)
     
     class Relationships(JSONAPISerializer.Relationships):
-        country = JSONAPISerializer.Type(
+        country = JSONAPISerializer.ObjectId(
             view_name='cities-light-api-country-detail'
         )
 
@@ -21,11 +21,11 @@ class TestSerializer(JSONAPISerializer):
         title = serializers.CharField(max_length=128)
     
     class Relationships(JSONAPISerializer.Relationships):
-        city = JSONAPISerializer.Type(
+        city = JSONAPISerializer.ObjectId(
             required=False, view_name='cities-light-api-city-detail'
         )
         country = serializers.ListField(
-            required=False, child=JSONAPISerializer.Type(
+            required=False, child=JSONAPISerializer.ObjectId(
                 view_name='cities-light-api-country-detail'
         ))
     

@@ -28,19 +28,44 @@ class TestViewSet(ViewSet):
     )
     
     async def retrieve(self, request, pk):
-        objects = await self.queryset.aget(id=pk)
-        data = await TestSerializer(
-            objects, context={'request': request}
-        ).data
-        if data:
-            response = Response(data, status=200)
+        try:
+            object = await self.queryset.aget(id=pk)
+        except ObjectDoesNotExist:
+            response = Response({'data': None}, status=404)
         else:
-            response = Response(status=404)
+            response = Response(await TestSerializer(
+                object, context={'request': request}
+            ).data, status=200)
         return response
     
     async def list(self, request):
+        filter_params = {}
+        for key, val in request.query_params.items():
+            if not key.startswith('filter['):
+                continue
+            key = key.split('[')[-1].replace(']', '')
+            if '__' in key:
+                split_key = key.split('__')
+                key, lookup = split_key[0], '__' + split_key[1]
+            else:
+                lookup = '__in'
+            try:
+                is_relation = bool(getattr(
+                    self.queryset.model, key, None
+                ).field.remote_field)
+            except AttributeError:
+                continue
+            key = key + '__id' + lookup if is_relation else key + lookup
+            if ',' not in val and lookup != '__in' and val.isnumeric():
+                val = int(val)
+            elif lookup == '__range':
+                split = val.split(',')
+                val = [split[0], split[1]]
+            else:
+                val = val.split(',')
+            filter_params.update({key: val})
         objects = await self.pagination_class.paginate_queryset(
-            self.queryset.order_by('id'), request=request
+            self.queryset.filter(**filter_params).order_by('id'), request=request
         )
         data = await TestSerializer(
             objects, many=True, context={'request': request}
@@ -49,14 +74,14 @@ class TestViewSet(ViewSet):
         serializer_field = await TestSerializer(objects, many=True)['attributes']
         serializer_obj_representation = TestSerializer(objects, many=True).__repr__()
         async for test in TestSerializer(objects, many=True):
-            assert type(test) == list and len(test) > 1
-        assert type(serializer_field) == list and len(serializer_field) > 1
-        assert type(serializer_obj_representation) == str and len(serializer_obj_representation) > 10
+            assert type(test) == list
+        assert type(serializer_field) == list
+        assert type(serializer_obj_representation) == str and len(serializer_obj_representation) > 2
         # print(serializer_obj_representation)
-        if data:
+        if data['data']:
             response = await self.pagination_class.get_paginated_response(data)
         else:
-            response = Response(status=404)
+            response = Response({'data': []})
         return response
     
     async def create(self, request):
@@ -77,26 +102,51 @@ class TestViewSet(ViewSet):
     
     @action(methods=["get"], detail=False, url_path=r'(?P<pk>\d+)/(?P<type>\w+)', url_name="related")
     async def related(self, request, *args, **kwargs):
+        # related_model = getattr(self.queryset.model, kwargs['type']).field.related_model
+        serializer_field = TestSerializer.Relationships._declared_fields[kwargs['type']]
         object = await self.queryset.aget(id=kwargs['pk'])
-        field = TestSerializer.Relationships._declared_fields[kwargs['type']]
-        if not hasattr(field, 'child'):
-            return HttpResponseRedirect(await reverse(field.view_name, args=[getattr(object, kwargs['type']).id], request=request))
+        field = getattr(object, kwargs['type'])
+        if not hasattr(field, 'all'):
+            return HttpResponseRedirect(await reverse(
+                getattr(serializer_field, 'view_name'), 
+                args=[getattr(object, kwargs['type']).id], 
+                request=request
+            ))
         else:
-            # TODO: create the list view filtration
+            if kwargs['type'].endswith('ies'):
+                obj_type = 'y'.join(kwargs['type'].rsplit('ies', 1))
+            else:
+                obj_type = kwargs['type']
+            ids = [obj.id async for obj in await sync_to_async(getattr(object, kwargs['type']).all)()]
+            data = await TestSerializer(object, context={'request': request}).data
+            data = [obj_data for obj_data in data['included'] 
+                    if obj_data['type'] == obj_type and int(obj_data['id']) in ids]
+            return Response(data={'data': data})
             raise NotImplementedError('The many-to-many functionality is not implemented')
     
     @action(methods=["get"], detail=False, url_path=r'(?P<pk>\d+)/relationships/(?P<type>\w+)', url_name="self")
     async def self(self, request, *args, **kwargs):
+        serializer_field = TestSerializer.Relationships._declared_fields[kwargs['type']]
+        if hasattr(serializer_field, 'child'):
+            view_name = getattr(serializer_field.child, 'view_name')
+        else:
+            view_name = getattr(serializer_field, 'view_name')
         object = await self.queryset.aget(id=kwargs['pk'])
         field = getattr(object, kwargs['type'])
         if hasattr(field, 'all'):
             data = []
-            async for obj in field.all():
-                data.append(await TestSerializer.Type(obj).data)
+            async for obj in await sync_to_async(field.all)():
+                obj_data = await TestSerializer.ObjectId(obj).data
+                obj_data.update({'links': {'self': await reverse(
+                    serializer_field.child.view_name, args=[obj.id], request=request
+                )}})
+                data.append(obj_data)
+            return Response(data={'data': data})
         else:
-            data = await TestSerializer.Type(field).data
-        return Response(data={'data': data}, status=200)
-    
+            data = await TestSerializer.ObjectId(field).data
+            data['links'] = {}
+            data['links']['self'] = await reverse(view_name, args=[field.id], request=request)
+            return Response(data={'data': data})
 
 
 class UniversityViewSet(ViewSet):
@@ -106,14 +156,14 @@ class UniversityViewSet(ViewSet):
     queryset = University.objects.select_related('country')
     
     async def retrieve(self, request, pk):
-        objects = await self.queryset.aget(id=pk)
-        data = await UniversitySerializer(
-            objects, context={'request': request}
-        ).data
-        if data:
-            response = Response(data, status=200)
+        try:
+            objects = await self.queryset.aget(id=pk)
+        except ObjectDoesNotExist:
+            response = Response(data={'data': None}, status=404)
         else:
-            response = Response(status=404)
+            response = Response(await UniversitySerializer(
+                objects, context={'request': request}
+            ).data, status=200)
         return response
     
     async def list(self, request):
