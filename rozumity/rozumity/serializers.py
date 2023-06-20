@@ -323,10 +323,12 @@ class JSONAPIBaseSerializer:
         errors = {}
         fields = await self.fields
         for name, field in fields.items():
-            if field.read_only or name in read_only_fields:
-                continue
             if hasattr(field, 'child'):
                 field.child.required, field = field.required, field.child
+                if self.__class__.__name__ == 'Relationships':
+                    field.read_only = True
+            if field.read_only or name in read_only_fields:
+                continue
             value = await self.get_value(name, data)
             value = value.pop('data', value) if type(value) in [dict, list] else value
             value = [value] if type(value) != list else value
@@ -431,12 +433,10 @@ class SerializerMetaclass(type):
         obj_info = attrs.get('ObjectId', None)
         if issubclass(obj_info.__class__, cls):
             attrs.update(obj_info._declared_fields)
-        attrs.update({
-            name: field(read_only=True if name == 'relationships' else False) for name, field in {
-                key.lower(): attrs.get(key, None)
-                for key in ('Attributes', 'Relationships')
-            }.items() if field is not None
-        })
+        attrs.update({name: field() for name, field in {
+            key.lower(): attrs.get(key, None)
+            for key in ('Attributes', 'Relationships')
+        }.items() if field is not None})
         fields = [(field_name, attrs.pop(field_name))
                   for field_name, obj in list(attrs.items())
                   if isinstance(obj, Field) 
@@ -681,8 +681,9 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
         except TypeError:
             raise ValidationError({'data': ["A list of the object identificators is expected."]})
         await self.run_validators(data)
-        internal_value = await JSONAPIBaseSerializer.to_internal_value(self, data)
-        return internal_value.get('attributes', {})
+        data = await JSONAPIBaseSerializer.to_internal_value(self, data)
+        return {**data.get('attributes', {}), 
+                'relationships': data.get('relationships', {})}
     
     async def to_representation(self, instance):
         fields = await self.fields
