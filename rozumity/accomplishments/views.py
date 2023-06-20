@@ -100,39 +100,47 @@ class TestViewSet(ViewSet):
         print(f'function time: {time.time() - startT}ms')
         return Response(data=response_data, status=status)
     
-    @action(methods=["get"], detail=False, url_path=r'(?P<pk>\d+)/(?P<type>\w+)', url_name="related")
+    @action(methods=["get"], detail=False, url_path=r'(?P<pk>\d+)/(?P<field_name>\w+)', url_name="related")
     async def related(self, request, *args, **kwargs):
-        # related_model = getattr(self.queryset.model, kwargs['type']).field.related_model
-        serializer_field = TestSerializer.Relationships._declared_fields[kwargs['type']]
         object = await self.queryset.aget(id=kwargs['pk'])
-        field = getattr(object, kwargs['type'])
-        if not hasattr(field, 'all'):
-            return HttpResponseRedirect(await reverse(
+        try:
+            field_name = kwargs['field_name']
+            field = getattr(object, field_name)
+        except AttributeError:
+            return Response({'data': None}, status=404)
+        serializer_field = TestSerializer.Relationships._declared_fields[kwargs['field_name']]
+        if hasattr(field, 'all'):
+            link = '{}?filter[id]={}'.format(
+                await reverse(
+                    getattr(serializer_field.child, 'view_name').replace('detail', 'list'),
+                    request=request
+                ),
+                ",".join([
+                    str(obj.id) async for obj in 
+                    await sync_to_async(getattr(object, field_name).all)()
+                ])
+            )
+        elif field:
+            link = await reverse(
                 getattr(serializer_field, 'view_name'), 
-                args=[getattr(object, kwargs['type']).id], 
+                args=[getattr(object, field_name).id], 
                 request=request
-            ))
-        else:
-            if kwargs['type'].endswith('ies'):
-                obj_type = 'y'.join(kwargs['type'].rsplit('ies', 1))
-            else:
-                obj_type = kwargs['type']
-            ids = [obj.id async for obj in await sync_to_async(getattr(object, kwargs['type']).all)()]
-            data = await TestSerializer(object, context={'request': request}).data
-            data = [obj_data for obj_data in data['included'] 
-                    if obj_data['type'] == obj_type and int(obj_data['id']) in ids]
-            return Response(data={'data': data})
-            raise NotImplementedError('The many-to-many functionality is not implemented')
+            )
+        return HttpResponseRedirect(link)
     
-    @action(methods=["get"], detail=False, url_path=r'(?P<pk>\d+)/relationships/(?P<type>\w+)', url_name="self")
+    @action(methods=["get"], detail=False, url_path=r'(?P<pk>\d+)/relationships/(?P<field_name>\w+)', url_name="self")
     async def self(self, request, *args, **kwargs):
-        serializer_field = TestSerializer.Relationships._declared_fields[kwargs['type']]
+        object = await self.queryset.aget(id=kwargs['pk'])
+        try:
+            field_name = kwargs['field_name']
+            field = getattr(object, field_name)
+        except AttributeError:
+            return Response({'data': None}, status=404)
+        serializer_field = TestSerializer.Relationships._declared_fields[field_name]
         if hasattr(serializer_field, 'child'):
             view_name = getattr(serializer_field.child, 'view_name')
         else:
             view_name = getattr(serializer_field, 'view_name')
-        object = await self.queryset.aget(id=kwargs['pk'])
-        field = getattr(object, kwargs['type'])
         if hasattr(field, 'all'):
             data = []
             async for obj in await sync_to_async(field.all)():
